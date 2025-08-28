@@ -65,13 +65,12 @@ def query(word, lang, target_lang, debug = False):
 
             #iterate over all senses
             senses = entry.get('senses')
-            ret[i]['senses'] = []
-            for sense in senses:
+            ret[i]['senses'] = {}
+            for j, sense in enumerate(senses):
 
                 #iterate over all glosses and add to return
                 glosses = sense.get('glosses')
-                for gloss in glosses:
-                    ret[i]['senses'].append(gloss)
+                    ret[i]['senses'][j + 1] = glosses
 
             #get translations
             translations = entry.get('translations', [])
@@ -151,6 +150,36 @@ def en_lookup(word, target_lang):
                         continue
 
                     ret.append(tl.get('word'))
+
+        ####################################################
+        #TODO
+        #implement embedding check to compare simarity of
+        #english and korean translation to the original
+        #german sense
+
+        #using sentence-transformers
+
+        """
+        from sentence-transformers import SentenceTransformer, utils
+
+        #this should probably be somewhere outside
+        sentence_trans = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+
+        sense = #german sense
+        word = #english or korean (probably this is better) word from dictionary
+
+        s_vec = sentence_trans.encode(sense, convert_to_tensor=True)
+        w_vec = sentence_trans.encode(word, convert_to_tensor=True)
+
+        similarity = utils.cos_sim(s_vec, w_vec).item()
+
+        threshold = [0...1], probably 0.7 or so
+        
+        if similarity > threshold:
+            include word
+        
+
+        """
 
         return ret
 
