@@ -66,11 +66,13 @@ def query(word, lang, target_lang, debug = False):
             #iterate over all senses
             senses = entry.get('senses')
             ret[i]['senses'] = {}
+
             for j, sense in enumerate(senses):
 
                 #iterate over all glosses and add to return
                 glosses = sense.get('glosses')
-                    ret[i]['senses'][j + 1] = glosses
+                for gloss in glosses:
+                    ret[i]['senses'][j + 1] = gloss
 
             #get translations
             translations = entry.get('translations', [])
