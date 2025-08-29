@@ -4,7 +4,8 @@ import sqlite3
 from tqdm import tqdm
 
 path_map = {
-        'de' : './wiktionary/de_dict.jsonl'
+        'de' : './wiktionary/de_dict.jsonl',
+        'ko' : './wiktionary/ko_dict.jsonl'
         }
 
 
@@ -57,14 +58,14 @@ def query(word, lang, target_lang, debug = False):
             
             if debug:
                 print(entry.keys())
-                #pprint(entry)
+                print(entry)
 
             #word type/position
             ret[i]['type'] = entry.get('pos')
 
 
             #iterate over all senses
-            senses = entry.get('senses')
+            senses = entry.get('senses', [])
             ret[i]['senses'] = {}
 
             for j, sense in enumerate(senses):
@@ -75,7 +76,7 @@ def query(word, lang, target_lang, debug = False):
                 ret[i]['senses'][id] = {}
 
                 #iterate over all glosses and add to return
-                glosses = sense.get('glosses')
+                glosses = sense.get('glosses', [])
                 for gloss in glosses:
                     ret[i]['senses'][id][lang] = gloss
 
@@ -236,8 +237,8 @@ debug = False
 if len(sys.argv) > 2:
     debug = sys.argv[2]
 
-lang = 'de'
-target_lang = 'ko'
+lang = 'ko'
+target_lang = 'de'
 
 result = query(word, lang, target_lang, debug)
 
