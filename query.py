@@ -57,7 +57,7 @@ def query(word, lang, target_lang, debug = False):
             
             if debug:
                 print(entry.keys())
-                #print(entry)
+                #pprint(entry)
 
             #word type/position
             ret[i]['type'] = entry.get('pos')
@@ -69,22 +69,47 @@ def query(word, lang, target_lang, debug = False):
 
             for j, sense in enumerate(senses):
 
+                id = sense.get('sense_index')
+
+                #initialize empty dict
+                ret[i]['senses'][id] = {}
+
                 #iterate over all glosses and add to return
                 glosses = sense.get('glosses')
                 for gloss in glosses:
-                    ret[i]['senses'][j + 1] = gloss
+                    ret[i]['senses'][id][lang] = gloss
+
+                    #get translation
+                    ret[i]['senses'][id][target_lang] = marian_translate(gloss, lang, target_lang)
+                
+                #get raw tags as simple categories
+                ret[i]['senses'][id]['tags'] = sense.get('raw_tags', [])
+
+                #get example sentences
+
+                for k, example in enumerate(sense.get('examples', [])):
+                    ret[i]['senses'][id].setdefault(lang + '_ex', []).append(example.get('text'))
+
+                    #translate to target_lang as well
+                    ret[i]['senses'][id].setdefault(target_lang + '_ex', []).append(marian_translate(example.get('text'), lang, target_lang))
+                
+
 
             #get translations
             translations = entry.get('translations', [])
              
             #init dicts for translations
-            ret[i][target_lang] = {}
+            ret[i]['tl'] = {}
+            tl_dict = ret[i]['tl']
+
+            tl_dict[target_lang] = {}
+            
 
             #fallback, as many words might not have a translation
-            ret[i]['en'] = {}
+            tl_dict['en'] = {}
             
             #for translations via english dict
-            ret[i]['en_to_' + target_lang] = {}
+            tl_dict['en_to_' + target_lang] = {}
 
             for tl in translations:
 
@@ -95,7 +120,7 @@ def query(word, lang, target_lang, debug = False):
 
                     if tl.get('lang_code') == target:
                     
-                        ret[i][target].setdefault(sense_id, []).append(tl.get('word'))
+                        tl_dict[target].setdefault(sense_id, []).append(tl.get('word'))
 
                 
                 #get target language translations over english as well, as many words in german dont have korean translartions
@@ -103,10 +128,12 @@ def query(word, lang, target_lang, debug = False):
 
                     en_results = en_lookup(tl.get('word'), target_lang)
                     for result in en_results:
-                        ret[i]['en_to_'+target_lang].setdefault(sense_id, []).append(result)
+                        tl_dict['en_to_'+target_lang].setdefault(sense_id, []).append(result)
 
 
     return ret
+
+
 
 #takes the english translation and returns the word in target_language, by going through the english dictionary
 def en_lookup(word, target_lang):
@@ -198,7 +225,7 @@ model = "later"
 tokenizer = "later"
 
 
-def marian_translate(word):
+def marian_translate(word, lang, target_lang):
     return word
 
 
