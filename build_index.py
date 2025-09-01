@@ -1,13 +1,14 @@
 import json
 import sys
 import sqlite3
-from tqdm import tqdm
-
 
 lang = sys.argv[1] #e.g. 'de', 'en'
 
 db = sqlite3.connect("./wiktionary/offsets.db")
 cur = db.cursor()
+
+#drop any existing tables
+cur.execute(f"DROP TABLE IF EXISTS {lang}_offsets")
 
 #create table
 cur.execute(f"CREATE TABLE IF NOT EXISTS {lang}_offsets (word TEXT,offset INTEGER)")

@@ -2,19 +2,30 @@ import sys
 import json
 import sqlite3
 from tqdm import tqdm
+from fastapi import FastAPI
+from pydantic import BaseModel
 
-path_map = {
-        'de' : './wiktionary/de_dict.jsonl',
-        'ko' : './wiktionary/ko_dict.jsonl'
-        }
+#run this app with:
+"""
+uvicorn query:app --reload --host 127.0.0.1 --port 8765
+"""
 
 
-db = sqlite3.connect('./wiktionary/offsets.db')
-cur = db.cursor()
+app = FastAPI()
+
+# Request schema
+class QueryRequest(BaseModel):
+    word: str
+    lang: str
+    target_lang: str
+    debug: bool = False
+
+
+path = './wiktionary/*_dict.jsonl'
 
 
 #returns data from all entries of a word
-def query(word, lang, target_lang, debug = False):
+def fetch(word, lang, target_lang, cur, debug = False):
 
     #fetch all entries of <word> from db
     cur.execute(f"SELECT offset FROM " + lang + "_offsets WHERE word =?", (word,))
@@ -27,11 +38,12 @@ def query(word, lang, target_lang, debug = False):
     #original word
     ret[lang] = word
 
+
     #open appropriate language file
-    with open(path_map[lang], 'rb') as f:
+    with open(path.replace('*', lang), 'rb') as f:
 
         #for every offset matching our query
-        for _i in tqdm(lines, desc='Querying ' + lang + '_dict..'):
+        for _i in tqdm(lines, desc=f"Querying {word} in {lang} dictionary..."):
 
             #unpack _i, as it is a tuple with 1 entry
             i = _i[0]
@@ -42,8 +54,6 @@ def query(word, lang, target_lang, debug = False):
             #go to offset and read
             f.seek(i)
             line = f.readline()
-            
-            #print(line.decode("utf-8"))
 
             #load as json and decode from binary
             entry = json.loads(line.decode("utf-8"))
@@ -52,17 +62,15 @@ def query(word, lang, target_lang, debug = False):
             if entry.get('lang_code') != lang:
                 continue
 
-
             #create empty dict from this entry
             ret[i] = {}
-            
+
             if debug:
                 print(entry.keys())
                 print(entry)
 
             #word type/position
             ret[i]['type'] = entry.get('pos')
-
 
             #iterate over all senses
             senses = entry.get('senses', [])
@@ -81,9 +89,9 @@ def query(word, lang, target_lang, debug = False):
                     ret[i]['senses'][id][lang] = gloss
 
                     #get translation
-                    ret[i]['senses'][id][target_lang] = marian_translate(gloss, lang, target_lang)
+                    ret[i]['senses'][id][target_lang] = gloss
                 
-                #get raw tags as simple categories
+                #get raw tags as simple categories, if they exist (rare)
                 ret[i]['senses'][id]['tags'] = sense.get('raw_tags', [])
 
                 #get example sentences
@@ -92,7 +100,7 @@ def query(word, lang, target_lang, debug = False):
                     ret[i]['senses'][id].setdefault(lang + '_ex', []).append(example.get('text'))
 
                     #translate to target_lang as well
-                    ret[i]['senses'][id].setdefault(target_lang + '_ex', []).append(marian_translate(example.get('text'), lang, target_lang))
+                    ret[i]['senses'][id].setdefault(target_lang + '_ex', []).append(example.get('text'))
                 
 
 
@@ -106,7 +114,7 @@ def query(word, lang, target_lang, debug = False):
             tl_dict[target_lang] = {}
             
 
-            #fallback, as many words might not have a translation
+            #fallback, as many words might not have a direct translation to target_lang
             tl_dict['en'] = {}
             
             #for translations via english dict
@@ -119,17 +127,28 @@ def query(word, lang, target_lang, debug = False):
                 #always get english translations as well
                 for target in (target_lang, 'en'):
 
-                    if tl.get('lang_code') == target:
+                    #check, if the translation matches our language and only add new translations, no duplicates
+                    if tl.get('lang_code') == target and tl.get('word') not in tl_dict[target].get(sense_id, []):
                     
                         tl_dict[target].setdefault(sense_id, []).append(tl.get('word'))
 
                 
-                #get target language translations over english as well, as many words in german dont have korean translartions
+                #get target language translations over english as well, as many words in german dont have korean translations
                 if tl.get('lang_code') == 'en':
 
-                    en_results = en_lookup(tl.get('word'), target_lang)
+                    en_results = en_lookup(tl.get('word'), target_lang, ret[i]['senses'][sense_id][lang], cur)
                     for result in en_results:
-                        tl_dict['en_to_'+target_lang].setdefault(sense_id, []).append(result)
+
+                        #check, whether the translation matches the original sense
+                        scores = similarity_check([[ret[lang], ret[i]['senses'][sense_id][lang], result]], [ret[i]['senses'][sense_id][lang]])
+
+
+                        if scores[0][1] < 0.3: #sense similarity threshold
+                            print(f"Refused '{result}' as translation for sense '{ret[i]['senses'][sense_id][lang]}' with score {scores[0][1]}")
+                            continue
+
+                        if result not in tl_dict['en_to_' + target_lang].get(sense_id, []):
+                            tl_dict['en_to_'+target_lang].setdefault(sense_id, []).append(result)
 
 
     return ret
@@ -137,7 +156,7 @@ def query(word, lang, target_lang, debug = False):
 
 
 #takes the english translation and returns the word in target_language, by going through the english dictionary
-def en_lookup(word, target_lang):
+def en_lookup(word, target_lang, sense, cur):
     
     #get offsets of entries about word
     cur.execute("SELECT offset FROM en_offsets WHERE word=?", (word,))
@@ -176,42 +195,11 @@ def en_lookup(word, target_lang):
             for tl in translations:
                 if tl.get('code') == target_lang:
                     #skip duplicates
-                    if tl.get('word') in ret:
-                        continue
-
-                    ret.append(tl.get('word'))
-
-        ####################################################
-        #TODO
-        #implement embedding check to compare simarity of
-        #english and korean translation to the original
-        #german sense
-
-        #using sentence-transformers
-
-        """
-        from sentence-transformers import SentenceTransformer, utils
-
-        #this should probably be somewhere outside
-        sentence_trans = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-
-        sense = #german sense
-        word = #english or korean (probably this is better) word from dictionary
-
-        s_vec = sentence_trans.encode(sense, convert_to_tensor=True)
-        w_vec = sentence_trans.encode(word, convert_to_tensor=True)
-
-        similarity = utils.cos_sim(s_vec, w_vec).item()
-
-        threshold = [0...1], probably 0.7 or so
-        
-        if similarity > threshold:
-            include word
-        
-
-        """
+                    if tl.get('word') not in ret:
+                        ret.append(tl.get('word'))
 
         return ret
+
 
 
 #pretty json printer by wrapping json.dumps()
@@ -219,27 +207,167 @@ def pprint(j):
     print(json.dumps(j, indent=2, ensure_ascii=False))
 
 
+def collect_to_be_translated(dict, lang, target_lang):
+    #object containing everything that needs to be translated
+    to_be_translated = []
+    origin = []
+
+    #Iterate through all different entries associated with the original word
+    for entry in dict.keys():
+
+        #skip original word entry
+        if entry == lang:
+            continue
+
+        #Iterate through all senses of the entry
+        for sense_id in dict[entry]['senses'].keys():
+            
+            for content in dict[entry]['senses'][sense_id]:
+                #definitions in target lang
+                if content == target_lang:
+
+                    to_be_translated.append(dict[entry]['senses'][sense_id][content])
+                    origin.append([entry, "senses", sense_id, content])
+                
+                #example sentences in target lang
+                if content == target_lang + '_ex':
+
+                    for idx, ex in enumerate(dict[entry]['senses'][sense_id][content]):
+
+                        to_be_translated.append(ex)
+                        origin.append([entry, "senses", sense_id, content, idx])
+        
+
+    return to_be_translated, origin
 
 
 
-model = "later"
-tokenizer = "later"
+
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import torch
+
+lang_code_map = {
+    "de": "deu_Latn",  # German
+    "ko": "kor_Hang",  # Korean
+    "en": "eng_Latn",  # English
+    "fr": "fra_Latn",  # French
+    "es": "spa_Latn",  # Spanish
+    # add more as needed
+}
 
 
-def marian_translate(word, lang, target_lang):
-    return word
+#translates the list of words from lang to target_lang using NLLB distilled model
+def translate(words, lang, target_lang):
+
+    if not words:
+        print("No words to translate.")
+        return []
+
+    #Check for unsupported language codes (to be added as needed)
+    if lang not in lang_code_map or target_lang not in lang_code_map:
+        raise ValueError(f"Unsupported lang code. Supported: {list(lang_code_map.keys())}")
+    
+    #get appropriate src and tgt codes from lang_code_map
+    src = lang_code_map[lang]
+    tgt = lang_code_map[target_lang]
+
+    #load model and tokenizer
+    model_name = "facebook/nllb-200-distilled-600M"
+    tokenizer = AutoTokenizer.from_pretrained(model_name, src_lang=src, tgt_lang=tgt)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+    model.to('cuda' if torch.cuda.is_available() else 'cpu')
+
+    #tokenize and translate
+    inputs = tokenizer(words, return_tensors="pt", padding=True, truncation=True).to(model.device)
+    translated = model.generate(**inputs, forced_bos_token_id=tokenizer.convert_tokens_to_ids(tgt))
+
+    return tokenizer.batch_decode(translated, skip_special_tokens=True)
+
+#reinserts the translated elements back into the original dict
+def insert_translations(translated, origins, dict, lang, target_lang):
+    #iterate through all origins and insert the corresponding translation
+    for idx, path in enumerate(origins):
+
+        #start from root of dict
+        curr = dict
+
+        #walk along the path to the target element
+        for street in path[: -1]:
+            curr = curr[street]
+        
+        #we have arrived at our target element
+        #replace the target element with the translation
+        curr[path[-1]] = translated[idx]
+
+    return dict
 
 
 
-word = sys.argv[1].lower()
-debug = False
+from sentence_transformers import SentenceTransformer, util
+#embedding model for semantic similarity checks
 
-if len(sys.argv) > 2:
-    debug = sys.argv[2]
+embedder = SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
 
-lang = 'ko'
-target_lang = 'de'
 
-result = query(word, lang, target_lang, debug)
+#computes similarity scores between all sentence pairs in sentences, using sentence-transformers
+def similarity_check(pairs, senses):
 
-pprint(result)
+    #return object
+    cosine_scores = []
+
+    #iterate over all pairs of original word and proposed translation
+    for i, pair in enumerate(pairs):
+
+        #list containing all embeddings
+        embeddings = []
+
+        #iterate over elements in pair (original word, translation)
+        for element in pair:
+
+            #Compute embedding for both lists
+            embeddings.append(embedder.encode(element, convert_to_tensor=True))
+        
+        #also encode the original sense for comparison
+        embeddings.append(embedder.encode(senses[i], convert_to_tensor=True))
+
+
+        #Compute cosine-similarities---------------------------------------------------
+
+        #compare original word to translation
+        translation_sim_score = util.pytorch_cos_sim(embeddings[0], embeddings[1])[0][0].item()
+
+        #compare translation to sense
+        sense_sim_score = util.pytorch_cos_sim(embeddings[1], embeddings[2])[0][0].item()
+
+        cosine_scores.append([translation_sim_score, sense_sim_score])
+
+    return cosine_scores
+
+
+
+
+@app.post("/query")
+def query(request: QueryRequest):
+
+    word = request.word.lower()
+    lang = request.lang
+    target_lang = request.target_lang
+    debug = request.debug
+
+    with sqlite3.connect('./wiktionary/offsets.db') as db:
+        cur = db.cursor()
+
+        #Fetch initial data
+        result1 = fetch(word, lang, target_lang, cur, debug)
+
+        #Collect everything that needs to be translated, with their origin paths
+        to_be_translated, origins = collect_to_be_translated(result1, lang, target_lang)
+
+        #Translate everything that needs to be translated
+        translated = translate(to_be_translated, lang, target_lang)
+
+        #Reinsert translations back into original dict
+        result2 = insert_translations(translated, origins, result1, lang, target_lang)
+
+    #return finished json object
+    return result2
