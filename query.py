@@ -18,6 +18,7 @@ class QueryRequest(BaseModel):
     word: str
     lang: str
     target_lang: str
+    tl_model: str = "NLLB"
     debug: bool = False
 
 
@@ -255,9 +256,8 @@ lang_code_map = {
     # add more as needed
 }
 
-
 #translates the list of words from lang to target_lang using NLLB distilled model
-def translate(words, lang, target_lang):
+def nllb_translate(words, lang, target_lang):
 
     if not words:
         print("No words to translate.")
@@ -282,6 +282,68 @@ def translate(words, lang, target_lang):
     translated = model.generate(**inputs, forced_bos_token_id=tokenizer.convert_tokens_to_ids(tgt))
 
     return tokenizer.batch_decode(translated, skip_special_tokens=True)
+
+
+import requests
+
+openrouter_api_key = "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"
+openrouter_url = "https://openrouter.ai/api/v1/chat/completions"
+model_id = "deepseek/deepseek-r1:free"  
+
+
+#translates the list of strings using deepseek
+def deepseek_translate(words, lang, target_lang):
+    headers = {
+        "Authorization": f"Bearer {openrouter_api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost",
+        "User-Agent": "VocabDict/1.0 (luisdrayer@web.de)"
+    }
+
+    system_role = "You are a translation tool."
+
+    prompt = {
+        "role": "user",
+        "content": (
+            f"Translate the following {lang} sentences into {target_lang}. "
+            f"Return the result strictly as a JSON object with keys 'original' and 'translation' "
+            f"for each sentence, like:\n"
+            f"[{{'original': '...', 'translation': '...'}}, ...]\n\n"
+            f"Sentences:\n{words}"
+        )
+    }
+
+    payload = {
+        "model": model_id,
+        "messages": [
+            {"role": "system", "content": system_role},
+            prompt,
+        ],
+    }
+
+    #try to query deepseek, if it fails (e.g. rate limit), use nllb as backup
+    try:
+        resp = requests.post(openrouter_url, headers=headers, json=payload)
+        resp.raise_for_status()
+        content_str = resp.json()["choices"][0]["message"]["content"]
+    
+        resp = requests.post(openrouter_url, headers=headers, json=payload)
+        resp.raise_for_status()
+        content_str = resp.json()["choices"][0]["message"]["content"]
+        # parse JSON safely
+        try:
+            content_list = json.loads(content_str.replace("'", '"'))
+            return [item["translation"] for item in content_list]
+        except json.JSONDecodeError:
+            print("DeepSeek returned invalid JSON, falling back to backup translator.")
+            return nllb_translate(words, lang, target_lang)
+
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 429:
+            print("DeepSeek rate-limited (429). Using backup translator...")
+            return nllb_translate(words, lang, target_lang)
+
+
 
 #reinserts the translated elements back into the original dict
 def insert_translations(translated, origins, dict, lang, target_lang):
@@ -344,6 +406,17 @@ def similarity_check(pairs, senses):
     return cosine_scores
 
 
+#checks the usage limit of the openrouter key
+@app.post("/check_deepseek_key")
+def check_openrouter_key():
+    headers = {
+    "Authorization": f"Bearer {openrouter_api_key}",
+    "User-Agent": "VocabDict/1.0 (luisdrayer@web.de)"
+    }
+    resp = requests.get("https://openrouter.ai/api/v1/key", headers=headers)
+    resp.raise_for_status()
+    return resp.json()
+
 
 
 @app.post("/query")
@@ -352,6 +425,7 @@ def query(request: QueryRequest):
     word = request.word.lower()
     lang = request.lang
     target_lang = request.target_lang
+    tl_model = request.tl_model
     debug = request.debug
 
     with sqlite3.connect('./wiktionary/offsets.db') as db:
@@ -364,7 +438,14 @@ def query(request: QueryRequest):
         to_be_translated, origins = collect_to_be_translated(result1, lang, target_lang)
 
         #Translate everything that needs to be translated
-        translated = translate(to_be_translated, lang, target_lang)
+        translated = []
+
+        match tl_model:
+            case "NLLB":
+                translated = nllb_translate(to_be_translated, lang, target_lang)
+            case "Deepseek":
+                translated = deepseek_translate(to_be_translated, lang, target_lang)
+        
 
         #Reinsert translations back into original dict
         result2 = insert_translations(translated, origins, result1, lang, target_lang)
