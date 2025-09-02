@@ -286,7 +286,12 @@ def nllb_translate(words, lang, target_lang):
 
 import requests
 
-openrouter_api_key = "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"
+# load the open router api key
+def load_OR_key(path="OR_key.txt"):
+    with open(path, "r") as f:
+        return f.read().strip()
+
+openrouter_api_key = load_OR_key(path="OR_key.txt")
 openrouter_url = "https://openrouter.ai/api/v1/chat/completions"
 model_id = "deepseek/deepseek-r1:free"  
 
