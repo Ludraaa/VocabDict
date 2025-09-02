@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 #run this app with:
 """
-uvicorn query:app --reload --host 127.0.0.1 --port 8765
+uvicorn query:app --reload --host 127.0.0.1 --port 8766
 """
 
 
@@ -426,6 +426,8 @@ def check_openrouter_key():
 
 @app.post("/query")
 def query(request: QueryRequest):
+
+    print("Querying for word:", request.word)
 
     word = request.word.lower()
     lang = request.lang

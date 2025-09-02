@@ -8,7 +8,7 @@ tl_model = 'NLLB'
 if len(sys.argv) > 2:
     tl_model = sys.argv[2]
 
-query_url = "http://127.0.0.1:8765/query"
+query_url = "http://127.0.0.1:8766/query"
 payload = {
     "word": word,
     "lang": "de",
