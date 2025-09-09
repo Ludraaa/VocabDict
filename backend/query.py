@@ -72,6 +72,10 @@ def fetch(word, lang, target_lang, cur, debug = False):
 
             #word type/position
             ret[i]['type'] = entry.get('pos')
+            #get the original word as well 
+
+            #TODO handle things like articles ("der", "die", "das") in german and capitalization in english
+            ret[i]['word'] = entry.get('word')
 
             #iterate over all senses
             senses = entry.get('senses', [])

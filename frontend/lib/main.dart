@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 //widget imports
-import "query_field.dart";
+import "query_screen.dart";
 
 void main() {
   runApp(const MyApp());
@@ -33,14 +33,6 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
-
-  void _incrementCounter() {
-    setState(() {
-      _counter++;
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -50,12 +42,6 @@ class _MyHomePageState extends State<MyHomePage> {
       ),
 
       body: Padding(padding: const EdgeInsets.all(16.0), child: QueryField()),
-
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ),
     );
   }
 }
