@@ -14,10 +14,12 @@ class QueryField extends StatefulWidget {
 class _QueryFieldState extends State<QueryField> {
   final _queryController = TextEditingController();
 
-  Map _response = {}; // to store backend response
+  Map<String, dynamic> _response = {}; // to store backend response
+  String _query = "";
   bool _isLoading = false;
   String lang = "de"; // default language
   String targetLang = "ko"; // default target language
+  final List<String> langSelection = ["en", "de", "ko"];
 
   //Querys the backend for the given word and returns the response as a Map
   void queryBackend() async {
@@ -30,9 +32,11 @@ class _QueryFieldState extends State<QueryField> {
       "http://127.0.0.1:8766/query",
     ); // backend address and port
 
+    _query = _queryController.text;
+
     //query params
     final payload = {
-      "word": _queryController.text,
+      "word": _query,
       "lang": lang,
       "target_lang": targetLang,
       "tl_model": "NLLB",
@@ -69,10 +73,46 @@ class _QueryFieldState extends State<QueryField> {
     return Column(
       children: [
         Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text("Translating from "),
+            DropdownButton<String>(
+              value: lang,
+              items: langSelection.map((lang) {
+                return DropdownMenuItem(value: lang, child: Text(lang));
+              }).toList(),
+              onChanged: (value) {
+                if (value != null) {
+                  setState(() {
+                    lang = value;
+                    _response = {};
+                  });
+                }
+              },
+            ),
+            Text(" to "),
+            DropdownButton<String>(
+              value: targetLang,
+              items: langSelection.map((lang) {
+                return DropdownMenuItem(value: lang, child: Text(lang));
+              }).toList(),
+              onChanged: (value) {
+                if (value != null) {
+                  setState(() {
+                    targetLang = value;
+                    _response = {};
+                  });
+                }
+              },
+            ),
+          ],
+        ),
+        Row(
           children: [
             Flexible(
               child: TextField(
                 controller: _queryController,
+                onSubmitted: (value) => queryBackend(),
                 decoration: const InputDecoration(
                   labelText: "Enter word",
                   border: OutlineInputBorder(),
@@ -90,13 +130,6 @@ class _QueryFieldState extends State<QueryField> {
         const SizedBox(height: 10),
         ElevatedButton(onPressed: queryBackend, child: const Text("Submit")),
         const SizedBox(height: 20),
-
-        // Word header
-        if (_response.containsKey("de") && !_isLoading)
-          Text(
-            _response["de"],
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-          ),
 
         const SizedBox(height: 10),
 
@@ -121,6 +154,7 @@ class VocabCards extends StatefulWidget {
   final Map<dynamic, dynamic> entries;
   final String lang;
   final String targetLang;
+  int customEntryCount = 0;
 
   final path = []; // path to the entry in the response map
 
@@ -142,23 +176,39 @@ class _VocabCardsState extends State<VocabCards> {
     var e = widget.entries;
     //create list of entries without the first entry ("de")
     final entryList = e.entries.toList();
-    final query = entryList[0].value;
-    entryList.removeAt(0); // remove "de" entry
 
     return Column(
       children: [
-        Align(
-          alignment: Alignment.centerRight,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(0, 0, 20, 0),
-            child: IconButton(
-              onPressed: () {},
-              icon: Icon(Icons.add),
-              tooltip: "Adds a new entry",
-              hoverColor: Colors.blue[100],
+        Stack(
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 0, 0),
+                child: IconButton(
+                  onPressed: () {},
+                  icon: Icon(Icons.add),
+                  tooltip: "Adds a new entry",
+                  hoverColor: Colors.blue[100],
+                  style: ButtonStyle(elevation: WidgetStatePropertyAll(2.0)),
+                ),
+              ),
             ),
-          ),
+            // Word header
+            if (widget.entries.containsKey(widget.lang))
+              Align(
+                alignment: Alignment.center,
+                child: Text(
+                  widget.entries[widget.lang],
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+          ],
         ),
+        Divider(height: 3.0),
         Expanded(
           child: ListView.builder(
             itemCount: entryList.length,
@@ -169,20 +219,24 @@ class _VocabCardsState extends State<VocabCards> {
               return Card(
                 child: ExpansionTile(
                   title: EditableTextCard(
-                    content: "$query",
+                    content: value["word"],
                     path: [...widget.path, key, "word"],
                     entries: widget.entries,
                     isBold: true,
                     fontSize: 18.0,
                   ),
-                  subtitle: Text("${value["type"]}"),
+                  subtitle: EditableTextCard(
+                    content: "${value["type"]}",
+                    path: [...widget.path, key, "type"],
+                    entries: widget.entries,
+                  ),
                   children: value["senses"].entries
                       .map<Widget>(
-                        (entry) => SenseCard(
+                        (entry) => EntryCard(
                           sense: entry.value,
                           lang: widget.lang,
                           targetLang: widget.targetLang,
-                          path: [...widget.path, key],
+                          path: [...widget.path, key, "senses", entry.key],
                           entries: widget.entries,
                         ),
                       )
@@ -197,14 +251,14 @@ class _VocabCardsState extends State<VocabCards> {
   }
 }
 
-class SenseCard extends StatelessWidget {
+class EntryCard extends StatelessWidget {
   final Map<String, dynamic> sense;
   final String lang;
   final String targetLang;
   final List<String> path;
   final Map<dynamic, dynamic> entries;
 
-  const SenseCard({
+  const EntryCard({
     super.key,
     required this.sense,
     required this.lang,
@@ -215,6 +269,10 @@ class SenseCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    List tl = sense["${targetLang}_tl"];
+    List en_tl = sense["en_tl"];
+    List tags = sense["tags"];
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 0, 0, 0),
@@ -223,11 +281,77 @@ class SenseCard extends StatelessWidget {
           collapsedBackgroundColor: Colors.white,
           title: EditableTextCard(
             content: sense[lang],
-            path: [],
+            path: [...path, lang],
             entries: entries,
           ),
-          subtitle: Text(sense['ko']),
-          children: [],
+          subtitle: EditableTextCard(
+            content: sense[targetLang],
+            path: [...path, targetLang],
+            entries: entries,
+          ),
+          children: [
+            Column(
+              children: [
+                Row(
+                  children: tags.asMap().entries.map((entry) {
+                    final index = entry.key;
+                    final item = entry.value;
+                    return Chip(
+                      label: EditableTextCard(
+                        content: item.toString(),
+                        path: [...path, "tags", index.toString()],
+                        entries: entries,
+                      ),
+                    );
+                  }).toList(),
+                ),
+                ExpansionTile(
+                  title: Text(
+                    "Translations:",
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  children: tl.asMap().entries.map((entry) {
+                    final index = entry.key;
+                    final item = entry.value;
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 0, 0),
+                      child: ListTile(
+                        dense: true,
+                        title: EditableTextCard(
+                          content: item.toString(),
+                          path: [...path, "${targetLang}_tl", index.toString()],
+                          entries: entries,
+                          fontSize: 14.0,
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+                ExpansionTile(
+                  title: Text(
+                    "English Translations:",
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  children: en_tl.asMap().entries.map((entry) {
+                    final index = entry.key;
+                    final item = entry.value;
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 0, 0),
+                      child: ListTile(
+                        dense: true,
+                        title: EditableTextCard(
+                          content: item.toString(),
+                          path: [...path, "en_tl", index.toString()],
+                          entries: entries,
+                          fontSize: 14.0,
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
@@ -243,7 +367,6 @@ class EditableTextCard extends StatefulWidget {
 
   double fontSize = 16.0;
   bool isBold = false;
-  double textWidth = 0.0;
 
   EditableTextCard({
     super.key,
@@ -278,11 +401,13 @@ class _EditableTextCardState extends State<EditableTextCard> {
         });
       }
     });
-    widget.textWidth = calculateTextWidth();
   }
 
-  double calculateTextWidth() {
-    final TextPainter textPainter = TextPainter(
+  //will happen on gesture detector click
+  void _moveCursor(TapDownDetails details) {
+    final tapX = details.localPosition.dx;
+
+    final textPainter = TextPainter(
       text: TextSpan(
         text: widget.content,
         style: TextStyle(
@@ -290,10 +415,16 @@ class _EditableTextCardState extends State<EditableTextCard> {
           fontWeight: widget.isBold ? FontWeight.bold : FontWeight.normal,
         ),
       ),
-      maxLines: 1,
       textDirection: TextDirection.ltr,
-    )..layout(minWidth: 0, maxWidth: double.infinity);
-    return textPainter.size.width;
+    )..layout();
+
+    // Get character index at tap position
+    final pos = textPainter.getPositionForOffset(Offset(tapX, 0));
+    final offset = pos.offset - 1;
+
+    setState(() {
+      _controller.selection = TextSelection.collapsed(offset: offset);
+    });
   }
 
   @override
@@ -306,57 +437,77 @@ class _EditableTextCardState extends State<EditableTextCard> {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        _isEditing
-            ? Flexible(
-                child: TextField(
-                  controller: _controller,
-                  focusNode: _focusNode,
-                  decoration: InputDecoration(border: InputBorder.none),
-                  onChanged: (value) {
-                    setState(() {
-                      widget.content = value;
-                    });
-                    // Update the entries map at the specified path
-                    print(widget.path);
-                    var current = widget.entries;
-                    for (var i = 0; i < widget.path.length - 1; i++) {
-                      current = current[widget.path[i]];
-                    }
-                    current[widget.path.last] = value;
-                    widget.textWidth = calculateTextWidth();
-                  },
-                  autofocus: true,
-                  onSubmitted: (value) {
-                    setState(() {
-                      _isEditing = false; // go back to read-only
-                      widget.content = value;
-                    });
-                  },
-                  style: TextStyle(
-                    fontSize: widget.fontSize,
-                    fontWeight: widget.isBold
-                        ? FontWeight.bold
-                        : FontWeight.normal,
-                  ),
-                ),
-              )
-            : GestureDetector(
-                onTap: () {
-                  setState(() {
-                    _isEditing = true; // switch to editing mode
-                  });
-                },
-                child: Text(
-                  widget.content,
-                  style: TextStyle(
-                    fontSize: widget.fontSize,
-                    fontWeight: widget.isBold
-                        ? FontWeight.bold
-                        : FontWeight.normal,
-                  ),
-                ),
+        //case: we are in edit mode -> show text field
+        if (_isEditing)
+          Flexible(
+            child: TextField(
+              controller: _controller,
+              focusNode: _focusNode,
+              decoration: InputDecoration(border: InputBorder.none),
+              onChanged: (value) {
+                setState(() {
+                  widget.content = value;
+                });
+                // Update the entries map at the specified path
+                dynamic current = widget.entries;
+                for (var i = 0; i < widget.path.length - 1; i++) {
+                  var key = widget.path[i];
+
+                  if (current is Map) {
+                    current = current[key];
+                  } else {
+                    current = current[int.parse(key)];
+                  }
+                }
+                // Now assign
+                var lastKey = widget.path.last;
+                if (current is Map) {
+                  current[lastKey] = value;
+                } else {
+                  current[int.parse(lastKey)] = value;
+                }
+              },
+              autofocus: true,
+              onSubmitted: (value) {
+                setState(() {
+                  _isEditing = false; // go back to read-only
+                  widget.content = value;
+                });
+              },
+              style: TextStyle(
+                fontSize: widget.fontSize,
+                fontWeight: widget.isBold ? FontWeight.bold : FontWeight.normal,
               ),
-        SizedBox(width: widget.textWidth),
+            ),
+          )
+        //case: we are not in edit mode and the string is not empty -> show text
+        else if (widget.content != "")
+          GestureDetector(
+            onTapDown: (details) {
+              _moveCursor(details);
+              setState(() {
+                _isEditing = true; // switch to editing mode
+              });
+            },
+            child: Text(
+              widget.content,
+              style: TextStyle(
+                fontSize: widget.fontSize,
+                fontWeight: widget.isBold ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+          )
+        //case: the string is empty -> show button to add
+        else
+          IconButton(
+            onPressed: () {
+              setState(() {
+                _isEditing = true;
+              });
+            },
+            icon: Icon(Icons.add),
+          ),
+        SizedBox(width: 20), //to give a little bit of a buffer to the right
       ],
     );
   }

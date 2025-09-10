@@ -36,9 +36,6 @@ def fetch(word, lang, target_lang, cur, debug = False):
     
     #object to be returned later
     ret = {}
-    #original word
-    ret[lang] = word
-
 
     #open appropriate language file
     with open(path.replace('*', lang), 'rb') as f:
@@ -70,13 +67,13 @@ def fetch(word, lang, target_lang, cur, debug = False):
                 print(entry.keys())
                 print(entry)
 
-            #word type/position
-            ret[i]['type'] = entry.get('pos')
-            #get the original word as well 
-
+            #original word
             #TODO handle things like articles ("der", "die", "das") in german and capitalization in english
             ret[i]['word'] = entry.get('word')
 
+            #word type/position
+            ret[i]['type'] = entry.get('pos')
+            
             #iterate over all senses
             senses = entry.get('senses', [])
             ret[i]['senses'] = {}
@@ -107,23 +104,21 @@ def fetch(word, lang, target_lang, cur, debug = False):
                     #translate to target_lang as well
                     ret[i]['senses'][id].setdefault(target_lang + '_ex', []).append(example.get('text'))
                 
-
+            #initialize translation dicts:
+            #for sense in ret[i]['senses']:
+            #    ret[i]['senses'][sense][f'{lang}_tl'] = []
+            #    ret[i]['senses'][sense]['en_tl'] = []
 
             #get translations
             translations = entry.get('translations', [])
              
             #init dicts for translations
-            ret[i]['tl'] = {}
-            tl_dict = ret[i]['tl']
-
+            tl_dict = {}
             tl_dict[target_lang] = {}
             
-
             #fallback, as many words might not have a direct translation to target_lang
             tl_dict['en'] = {}
             
-            #for translations via english dict
-            tl_dict['en_to_' + target_lang] = {}
 
             for tl in translations:
 
@@ -145,17 +140,21 @@ def fetch(word, lang, target_lang, cur, debug = False):
                     for result in en_results:
 
                         #check, whether the translation matches the original sense
-                        scores = similarity_check([[ret[lang], ret[i]['senses'][sense_id][lang], result]], [ret[i]['senses'][sense_id][lang]])
+                        scores = similarity_check([[ret[i]['word'], ret[i]['senses'][sense_id][lang], result]], [ret[i]['senses'][sense_id][lang]])
 
 
                         if scores[0][1] < 0.3: #sense similarity threshold
                             print(f"Refused '{result}' as translation for sense '{ret[i]['senses'][sense_id][lang]}' with score {scores[0][1]}")
                             continue
 
-                        if result not in tl_dict['en_to_' + target_lang].get(sense_id, []):
-                            tl_dict['en_to_'+target_lang].setdefault(sense_id, []).append(result)
+                        if result not in tl_dict[target_lang].get(sense_id, []) and result is not None:
+                            tl_dict[target_lang].setdefault(sense_id, []).append(result)
 
 
+            #add translations to return dict
+            for sense in ret[i]['senses']:
+                ret[i]['senses'][sense][f'{target_lang}_tl'] = tl_dict[target_lang].get(sense, [])
+                ret[i]['senses'][sense]['en_tl'] = tl_dict['en'].get(sense, [])
     return ret
 
 
@@ -394,6 +393,10 @@ def similarity_check(pairs, senses):
 
         #iterate over elements in pair (original word, translation)
         for element in pair:
+
+            #Guard against empty elements
+            if element == None:
+                continue
 
             #Compute embedding for both lists
             embeddings.append(embedder.encode(element, convert_to_tensor=True))
