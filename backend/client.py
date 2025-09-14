@@ -8,7 +8,7 @@ tl_model = 'NLLB'
 if len(sys.argv) > 2:
     tl_model = sys.argv[2]
 
-query_url = "http://127.0.0.1:8766/query"
+query_url = "http://127.0.0.1:8766/query?word={word}&lang={lang}&target_lang={target_lang}&tl_model={tl_model}&debug={debug}".format(word=word, lang="de", target_lang="ko", tl_model=tl_model, debug=False)
 payload = {
     "word": word,
     "lang": "de",
@@ -19,7 +19,7 @@ payload = {
 
 
 start_time = time.time()  # record start
-response = requests.post(query_url, json=payload)
+response = requests.get(query_url)
 
 if response.ok:
     pprint(response.json())

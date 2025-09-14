@@ -13,15 +13,6 @@ uvicorn query:app --reload --host 127.0.0.1 --port 8766
 
 app = FastAPI()
 
-# Request schema
-class QueryRequest(BaseModel):
-    word: str
-    lang: str
-    target_lang: str
-    tl_model: str = "NLLB"
-    debug: bool = False
-
-
 path = './wiktionary/*_dict.jsonl'
 
 
@@ -430,23 +421,46 @@ def check_openrouter_key():
     return resp.json()
 
 
+#appends an empty entry to the result, to handle custom entries in the frontend
+def append_empty_entry(result, lang, target_lang, cur):
+    result["add"] = {}
+    return result
 
-@app.post("/query")
-def query(request: QueryRequest):
 
-    print("Querying for word:", request.word)
+#completely wipes a result dict, leaving only keys
+def wipe(data):
+    if isinstance(data, dict):
+        return {k: wipe(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return []  # replace lists with empty list
+    elif isinstance(data, str):
+        return ""  # replace strings with empty string
+    else:
+        return data  # leave numbers, bools, None unchanged
 
-    word = request.word.lower()
-    lang = request.lang
-    target_lang = request.target_lang
-    tl_model = request.tl_model
-    debug = request.debug
+
+@app.get("/get_empty_entry")
+#gets an empty entry to be used for custom input (by the user)
+def get_empty_entry(lang : str, target_lang : str):
+    with sqlite3.connect('./wiktionary/offsets.db') as db:
+        cur = db.cursor()
+
+        res = wipe(fetch("herrje", lang, target_lang, cur))
+        val = list(res.values())[0]
+    return {"custom": val}
+
+@app.get("/query")
+def query(word : str, lang : str, target_lang : str, tl_model : str, debug = False):
+
+    print("Querying for word:", word)
+
+    word = word.lower()
 
     with sqlite3.connect('./wiktionary/offsets.db') as db:
         cur = db.cursor()
 
         #Fetch initial data
-        result1 = fetch(word, lang, target_lang, cur, debug)
+        result1 = fetch(word, lang, target_lang, cur)
 
         #Collect everything that needs to be translated, with their origin paths
         to_be_translated, origins = collect_to_be_translated(result1, lang, target_lang)
@@ -463,6 +477,9 @@ def query(request: QueryRequest):
 
         #Reinsert translations back into original dict
         result2 = insert_translations(translated, origins, result1, lang, target_lang)
+
+        #append custom entry to the end, if the user wants to write a custom entry / create a new one
+        append_empty_entry(result2, lang, target_lang, cur)
 
     #return finished json object
     return result2
