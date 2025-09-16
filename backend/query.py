@@ -2,8 +2,9 @@ import sys
 import json
 import sqlite3
 from tqdm import tqdm
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+import asyncio
 
 #run this app with:
 """
@@ -343,6 +344,34 @@ def deepseek_translate(words, lang, target_lang):
             return nllb_translate(words, lang, target_lang)
 
 
+# load the DeepL api key
+def load_DeepL_key(path="DeepL_key.txt"):
+    with open(path, "r") as f:
+        return f.read().strip()
+
+DeepL_api_key = load_DeepL_key()
+DeepL_url = "https://api-free.deepl.com/v2/translate"
+
+#translates the list of strings using DeepL
+def deepl_translate(words, lang, target_lang):
+    headers = {
+        "Authorization": f"DeepL-Auth-Key {DeepL_api_key}"
+    }
+
+    # DeepL requires multiple 'text' fields for multiple sentences
+    data = [("text", w) for w in words]  # list of tuples
+    data += [
+        ("source_lang", lang),
+        ("target_lang", target_lang)
+    ]
+
+    resp = requests.post(DeepL_url, headers=headers, data=data)
+    resp.raise_for_status()
+    #pprint(resp.json())
+    return [t["text"] for t in resp.json()["translations"]]
+
+
+
 
 #reinserts the translated elements back into the original dict
 def insert_translations(translated, origins, dict, lang, target_lang):
@@ -449,23 +478,19 @@ def get_empty_entry(lang : str, target_lang : str):
         val = list(res.values())[0]
     return {"custom": val}
 
-@app.get("/query")
-def query(word : str, lang : str, target_lang : str, tl_model : str, debug = False):
 
-    print("Querying for word:", word)
-
+async def run_query(ws: WebSocket, word, lang, target_lang, tl_model):
+    await ws.send_text(f"Querying for word: {word}")
     word = word.lower()
 
     with sqlite3.connect('./wiktionary/offsets.db') as db:
         cur = db.cursor()
 
-        #Fetch initial data
+        await ws.send_text("Fetching word data")
         result1 = fetch(word, lang, target_lang, cur)
 
-        #Collect everything that needs to be translated, with their origin paths
+        await ws.send_text(f"Translating entries using {tl_model} model")
         to_be_translated, origins = collect_to_be_translated(result1, lang, target_lang)
-
-        #Translate everything that needs to be translated
         translated = []
 
         match tl_model:
@@ -473,13 +498,38 @@ def query(word : str, lang : str, target_lang : str, tl_model : str, debug = Fal
                 translated = nllb_translate(to_be_translated, lang, target_lang)
             case "Deepseek":
                 translated = deepseek_translate(to_be_translated, lang, target_lang)
-        
+            case "DeepL":
+                translated = deepl_translate(to_be_translated, lang, target_lang)
 
-        #Reinsert translations back into original dict
+        await ws.send_text("Inserting translations")
         result2 = insert_translations(translated, origins, result1, lang, target_lang)
-
-        #append custom entry to the end, if the user wants to write a custom entry / create a new one
         append_empty_entry(result2, lang, target_lang, cur)
 
-    #return finished json object
-    return result2
+    await ws.send_json({"type": "result", "data": result2})
+
+@app.websocket("/ws/query")
+async def query_ws(ws: WebSocket):
+    await ws.accept()
+    task = None
+
+    try:
+        data = await ws.receive_json()
+        word = data["word"]
+        lang = data["lang"]
+        target_lang = data["target_lang"]
+        tl_model = data["tl_model"]
+
+        # Run the query as a cancellable task
+        task = asyncio.create_task(run_query(ws, word, lang, target_lang, tl_model))
+        await task
+
+        await ws.close()
+
+    except WebSocketDisconnect:
+        print("Client disconnected")
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                print("Query task cancelled successfully")

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'dart:convert'; // for jsonDecode
 import 'package:http/http.dart' as http;
 import 'utils.dart'; // for prettyPrint
+import 'package:web_socket_channel/web_socket_channel.dart'; // for WebSockets
 
 ///This class handles the input field and the button for querying the dictionary / backend,
 ///as well as language selection.
@@ -23,6 +24,12 @@ class _QueryFieldState extends State<QueryField> {
     {},
   );
 
+  //to store logging while querying
+  String _log = "";
+
+  //reference to the websocket (nullable)
+  WebSocketChannel? _channel;
+
   String _query = "";
   // for loading logic
   bool _isLoading = false;
@@ -33,40 +40,69 @@ class _QueryFieldState extends State<QueryField> {
   //Options for language selection, expand later..
   final List<String> langSelection = ["en", "de", "ko"];
 
-  ///Performs a dictionary lookup + translation via the backend for the given word and returns the response as a Map
+  ///Performs a dictionary lookup + translation via the backend for the given word and returns the response as a Map.
   void queryBackend() async {
     //enable loading animation/logic
+    //reset log message and response
     setState(() {
       _isLoading = true;
+      _log = "";
+      _responseNotifier.value = {};
     });
 
     //get the text from the input field
     _query = _queryController.text;
 
     //backend address and port with parameters
-    final url = Uri.parse(
-      "http://127.0.0.1:8766/query?word=$_query&lang=$lang&target_lang=$targetLang&tl_model=NLLB",
+    _channel = WebSocketChannel.connect(
+      Uri.parse("ws://127.0.0.1:8766/ws/query"),
     );
 
-    final response = await http.get(url);
+    // Send query params as JSON
+    _channel!.sink.add(
+      jsonEncode({
+        "word": _queryController.text,
+        "lang": lang,
+        "target_lang": targetLang,
+        "tl_model": "DeepL",
+      }),
+    );
 
-    if (response.statusCode == 200) {
-      setState(() {
-        //reset response and set to results from backend
-        _responseNotifier.value = {};
-        _responseNotifier.value = jsonDecode(response.body);
-      });
-      //prettyPrint(_responseNotifier.value);
-    } else {
-      throw Exception(
-        'Query lookup failed.. (${response.statusCode}): ${response.body}',
-      );
-    }
+    //listen to the response stream
+    _channel!.stream.listen((message) {
+      //case: json
+      try {
+        final decoded = jsonDecode(message);
+
+        if (decoded["type"] == "result") {
+          setState(() {
+            //get response json
+            _responseNotifier.value = decoded["data"];
+
+            //disable loading animation
+            _isLoading = false;
+          });
+          _channel!.sink.close();
+        }
+        //case: not json -> log
+      } catch (_) {
+        //set message to log for display
+        setState(() {
+          _log = message;
+        });
+      }
+    });
 
     // clear input field
     _queryController.clear();
+  }
 
-    //disable loading animation/logic
+  ///Cancels the current query process by disconnecting the websocket.
+  void cancelQuery() {
+    //close connection if websocket is open (should always be the case..?)
+    _channel?.sink.close();
+
+    //disable loading animation
     setState(() {
       _isLoading = false;
     });
@@ -144,7 +180,13 @@ class _QueryFieldState extends State<QueryField> {
 
         // Rendering of results /-/ loading animation
         _isLoading
-            ? const CircularProgressIndicator()
+            ? Column(
+                children: [
+                  CircularProgressIndicator(),
+                  Text(_log),
+                  ElevatedButton(onPressed: cancelQuery, child: Text("Cancel")),
+                ],
+              )
             : _responseNotifier.value.isEmpty
             ? const Text("Enter query above!")
             : Expanded(
