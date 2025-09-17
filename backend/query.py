@@ -36,13 +36,13 @@ def fetch(word, lang, target_lang, cur, debug = False):
         for _i in tqdm(lines, desc=f"Querying {word} in {lang} dictionary..."):
 
             #unpack _i, as it is a tuple with 1 entry
-            i = _i[0]
+            entry_id = _i[0]
 
             #reset pointer to start of file
             f.seek(0)
 
             #go to offset and read
-            f.seek(i)
+            f.seek(entry_id)
             line = f.readline()
 
             #load as json and decode from binary
@@ -53,7 +53,7 @@ def fetch(word, lang, target_lang, cur, debug = False):
                 continue
 
             #create empty dict from this entry
-            ret[i] = {}
+            ret[entry_id] = {}
 
             if debug:
                 print(entry.keys())
@@ -61,40 +61,40 @@ def fetch(word, lang, target_lang, cur, debug = False):
 
             #original word
             #TODO handle things like articles ("der", "die", "das") in german and capitalization in english
-            ret[i]['word'] = entry.get('word')
+            ret[entry_id]['word'] = entry.get('word')
 
             #word type/position
-            ret[i]['type'] = entry.get('pos')
+            ret[entry_id]['type'] = entry.get('pos')
             
             #iterate over all senses
             senses = entry.get('senses', [])
-            ret[i]['senses'] = {}
+            ret[entry_id]['senses'] = {}
 
             for j, sense in enumerate(senses):
 
                 id = sense.get('sense_index')
 
                 #initialize empty dict
-                ret[i]['senses'][id] = {}
+                ret[entry_id]['senses'][id] = {}
 
                 #iterate over all glosses and add to return
                 glosses = sense.get('glosses', [])
                 for gloss in glosses:
-                    ret[i]['senses'][id][lang] = gloss
+                    ret[entry_id]['senses'][id][lang] = gloss
 
                     #get translation
-                    ret[i]['senses'][id][target_lang] = gloss
+                    ret[entry_id]['senses'][id][target_lang] = gloss
                 
                 #get raw tags as simple categories, if they exist (rare)
-                ret[i]['senses'][id]['tags'] = sense.get('raw_tags', [])
+                ret[entry_id]['senses'][id]['tags'] = sense.get('raw_tags', [])
 
                 #get example sentences
 
                 for k, example in enumerate(sense.get('examples', [])):
-                    ret[i]['senses'][id].setdefault(lang + '_ex', []).append(example.get('text'))
+                    ret[entry_id]['senses'][id].setdefault(lang + '_ex', []).append(example.get('text'))
 
                     #translate to target_lang as well
-                    ret[i]['senses'][id].setdefault(target_lang + '_ex', []).append(example.get('text'))
+                    ret[entry_id]['senses'][id].setdefault(target_lang + '_ex', []).append(example.get('text'))
                 
             #initialize translation dicts:
             #for sense in ret[i]['senses']:
@@ -128,15 +128,15 @@ def fetch(word, lang, target_lang, cur, debug = False):
                 #get target language translations over english as well, as many words in german dont have korean translations
                 if tl.get('lang_code') == 'en':
 
-                    en_results = en_lookup(tl.get('word'), target_lang, ret[i]['senses'][sense_id][lang], cur)
+                    en_results = en_lookup(tl.get('word'), target_lang, ret[entry_id]['senses'][sense_id][lang], cur)
                     for result in en_results:
 
                         #check, whether the translation matches the original sense
-                        scores = similarity_check([[ret[i]['word'], ret[i]['senses'][sense_id][lang], result]], [ret[i]['senses'][sense_id][lang]])
+                        scores = similarity_check([[ret[entry_id]['word'], ret[entry_id]['senses'][sense_id][lang], result]], [ret[entry_id]['senses'][sense_id][lang]])
 
 
                         if scores[0][1] < 0.3: #sense similarity threshold
-                            print(f"Refused '{result}' as translation for sense '{ret[i]['senses'][sense_id][lang]}' with score {scores[0][1]}")
+                            print(f"Refused '{result}' as translation for sense '{ret[entry_id]['senses'][sense_id][lang]}' with score {scores[0][1]}")
                             continue
 
                         if result not in tl_dict[target_lang].get(sense_id, []) and result is not None:
@@ -144,9 +144,9 @@ def fetch(word, lang, target_lang, cur, debug = False):
 
 
             #add translations to return dict
-            for sense in ret[i]['senses']:
-                ret[i]['senses'][sense][f'{target_lang}_tl'] = tl_dict[target_lang].get(sense, [])
-                ret[i]['senses'][sense]['en_tl'] = tl_dict['en'].get(sense, [])
+            for sense in ret[entry_id]['senses']:
+                ret[entry_id]['senses'][sense][f'{target_lang}_tl'] = tl_dict[target_lang].get(sense, [])
+                ret[entry_id]['senses'][sense]['en_tl'] = tl_dict['en'].get(sense, [])
     return ret
 
 
@@ -293,6 +293,10 @@ model_id = "deepseek/deepseek-r1:free"
 
 #translates the list of strings using deepseek
 def deepseek_translate(words, lang, target_lang):
+    if not words:
+        print("No words to translate.")
+        return []
+     
     headers = {
         "Authorization": f"Bearer {openrouter_api_key}",
         "Content-Type": "application/json",
@@ -354,6 +358,10 @@ DeepL_url = "https://api-free.deepl.com/v2/translate"
 
 #translates the list of strings using DeepL
 def deepl_translate(words, lang, target_lang):
+    if not words:
+        print("No words to translate.")
+        return []
+    
     headers = {
         "Authorization": f"DeepL-Auth-Key {DeepL_api_key}"
     }
@@ -450,11 +458,46 @@ def check_openrouter_key():
     return resp.json()
 
 
-#appends an empty entry to the result, to handle custom entries in the frontend
-def append_empty_entry(result, lang, target_lang, cur):
-    result["add"] = {}
-    return result
+def append_add_keys(obj, parent=None, key_in_parent=None):
+    if isinstance(obj, dict):
+        for k, v in list(obj.items()):
+            obj[k] = append_add_keys(v, obj, k)
 
+        # If dict is empty, replace it with {"add": {}}
+        if not obj:  
+            obj["add"] = {}
+        
+        # If this dict itself lives under an int-like key -> put "add" on parent
+        if is_int_key(key_in_parent):
+            if isinstance(parent, dict):
+                parent["add"] = {}
+
+        return obj
+
+    elif isinstance(obj, list):
+        for i in range(len(obj)):
+            obj[i] = append_add_keys(obj[i], obj, i)
+        obj.append("add")
+        return obj
+
+    else:
+        return obj
+    
+def is_int_key(key):
+    """
+    Check if a given key can be parsed into an integer.
+
+    Parameters:
+        key (any): The key to be checked.
+
+    Returns:
+        bool: True if the key can be parsed into an integer, False otherwise.
+    """
+    try:
+        int(key)
+        return True
+    except (ValueError, TypeError):
+        return False
 
 #completely wipes a result dict, leaving only keys
 def wipe(data):
@@ -474,7 +517,7 @@ def get_empty_entry(lang : str, target_lang : str):
     with sqlite3.connect('./wiktionary/offsets.db') as db:
         cur = db.cursor()
 
-        res = wipe(fetch("herrje", lang, target_lang, cur))
+        res = append_add_keys(wipe(fetch("herrje", lang, target_lang, cur)))
         val = list(res.values())[0]
     return {"custom": val}
 
@@ -503,7 +546,8 @@ async def run_query(ws: WebSocket, word, lang, target_lang, tl_model):
 
         await ws.send_text("Inserting translations")
         result2 = insert_translations(translated, origins, result1, lang, target_lang)
-        append_empty_entry(result2, lang, target_lang, cur)
+        append_add_keys(result2)
+        pprint(result2)
 
     await ws.send_json({"type": "result", "data": result2})
 

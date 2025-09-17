@@ -4,6 +4,7 @@ import 'dart:convert'; // for jsonDecode
 import 'package:http/http.dart' as http;
 import 'utils.dart'; // for prettyPrint
 import 'package:web_socket_channel/web_socket_channel.dart'; // for WebSockets
+import 'dart:math';
 
 ///This class handles the input field and the button for querying the dictionary / backend,
 ///as well as language selection.
@@ -64,7 +65,7 @@ class _QueryFieldState extends State<QueryField> {
         "word": _queryController.text,
         "lang": lang,
         "target_lang": targetLang,
-        "tl_model": "DeepL",
+        "tl_model": "NLLB",
       }),
     );
 
@@ -273,22 +274,26 @@ class _VocabCardsState extends State<VocabCards> {
                         ),
 
                         //senses
-                        children: value["senses"].entries
-                            .map<Widget>(
-                              (entry) => EntryCard(
-                                sense: entry.value,
-                                lang: widget.lang,
-                                targetLang: widget.targetLang,
-                                path: [
-                                  ...widget.path,
-                                  key,
-                                  "senses",
-                                  entry.key,
-                                ],
-                                entriesNotifier: widget.entriesNotifier,
-                              ),
-                            )
-                            .toList(),
+                        children: value["senses"].entries.map<Widget>((entry) {
+                          //add sense logic if entry is "add"
+                          if (entry.key == "add") {
+                            return AddCard(
+                              lang: widget.lang,
+                              targetLang: widget.targetLang,
+                              entriesNotifier: widget.entriesNotifier,
+                              path: [...widget.path, key.toString(), "senses"],
+                            );
+                            //else case: entry is not "add", but an integer key
+                          } else {
+                            return EntryCard(
+                              sense: entry.value,
+                              lang: widget.lang,
+                              targetLang: widget.targetLang,
+                              path: [...widget.path, key, "senses", entry.key],
+                              entriesNotifier: widget.entriesNotifier,
+                            );
+                          }
+                        }).toList(),
                       ),
                     );
                   } else {
@@ -610,9 +615,6 @@ class AddCard extends StatefulWidget {
 
 class _AddCardState extends State<AddCard> {
   Future<void> add() async {
-    //delete the temporary "add" key to make room for the new one (and organize ordering)
-    widget.entriesNotifier.value.remove("add");
-
     final url = Uri.parse(
       "http://127.0.0.1:8766/get_empty_entry?lang=${widget.lang}&target_lang=${widget.targetLang}",
     ); // backend address and port
@@ -621,19 +623,51 @@ class _AddCardState extends State<AddCard> {
 
     if (response.statusCode == 200) {
       setState(() {
-        final entry = jsonDecode(response.body);
+        var entry = jsonDecode(response.body);
+
+        //get the part of the map at the specified path
+        var resultsAtPath = walkJson(widget.path, widget.entriesNotifier.value);
+        //prettyPrint(resultsAtPath);
+
+        int i = -1;
+
+        //do this now so walkJson still works with the general path and set the actual new index later
+        entry = {"$i": entry["custom"]};
         //iterate keys until we find a free one
-        int i = 0;
-        while (widget.entriesNotifier.value.containsKey("custom$i")) {
-          i++;
+        while (resultsAtPath.containsKey("$i")) {
+          i -= 1;
         }
-        widget.entriesNotifier.value = {
-          ...widget.entriesNotifier.value,
-          "custom$i": entry["custom"],
-          "add": {},
-        };
+
+        //get the empty entry starting at the specified path
+        //if we add a new entry at the root, the path has to be []
+        //otherwise, the path should be the widgets path except for the first one, which has to always be "-1"
+        dynamic emptyAtPath;
+        //we dont need to walk the path if we add a new entry at the root
+        if (widget.path.isEmpty) {
+          emptyAtPath = entry;
+        } else {
+          emptyAtPath = walkJson([
+            "-1",
+            ...widget.path.sublist(min(1, widget.path.length)),
+          ], entry);
+        }
+
+        //get the wanted key (there should only ever be a single key, apart from the "add" key)
+        var key = emptyAtPath.keys.first;
+        emptyAtPath = {"$i": emptyAtPath[key]};
+
+        //append empty entry to the map at the specified path
+        resultsAtPath.addAll(emptyAtPath);
+
+        //delete and add "add" again, as it should be the last key
+        resultsAtPath.remove("add");
+        resultsAtPath["add"] = {};
+
+        //set value listener to trigger a rebuild
+        var curr = widget.entriesNotifier.value;
+        widget.entriesNotifier.value = Map<dynamic, dynamic>.from(curr);
       });
-      prettyPrint(widget.entriesNotifier.value);
+      //prettyPrint(widget.entriesNotifier.value);
     } else {
       throw Exception(
         "Backend request failed "
