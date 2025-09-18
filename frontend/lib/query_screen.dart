@@ -32,6 +32,7 @@ class _QueryFieldState extends State<QueryField> {
   WebSocketChannel? _channel;
 
   String _query = "";
+
   // for loading logic
   bool _isLoading = false;
 
@@ -341,6 +342,8 @@ class EntryCard extends StatelessWidget {
     List enTl = sense["en_tl"];
     List tags = sense["tags"];
 
+    Map<String, dynamic> examples = sense["ex"];
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 0, 0, 0),
@@ -387,18 +390,31 @@ class EntryCard extends StatelessWidget {
                   children: tl.asMap().entries.map((entry) {
                     final index = entry.key;
                     final item = entry.value;
-                    return Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 0, 0, 0),
-                      child: ListTile(
-                        dense: true,
-                        title: EditableTextCard(
-                          content: item.toString(),
-                          path: [...path, "${targetLang}_tl", index.toString()],
-                          entriesNotifier: entriesNotifier,
-                          fontSize: 14.0,
+                    if (item != "add") {
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 0, 0, 0),
+                        child: ListTile(
+                          dense: true,
+                          title: EditableTextCard(
+                            content: item.toString(),
+                            path: [
+                              ...path,
+                              "${targetLang}_tl",
+                              index.toString(),
+                            ],
+                            entriesNotifier: entriesNotifier,
+                            fontSize: 14.0,
+                          ),
                         ),
-                      ),
-                    );
+                      );
+                    } else {
+                      return AddCard(
+                        lang: lang,
+                        targetLang: targetLang,
+                        entriesNotifier: entriesNotifier,
+                        path: [...path, "${targetLang}_tl"],
+                      );
+                    }
                   }).toList(),
                 ),
                 //Translations to english
@@ -410,17 +426,62 @@ class EntryCard extends StatelessWidget {
                   children: enTl.asMap().entries.map((entry) {
                     final index = entry.key;
                     final item = entry.value;
+                    if (item != "add") {
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 0, 0, 0),
+                        child: ListTile(
+                          dense: true,
+                          title: EditableTextCard(
+                            content: item.toString(),
+                            path: [...path, "en_tl", index.toString()],
+                            entriesNotifier: entriesNotifier,
+                            fontSize: 14.0,
+                          ),
+                        ),
+                      );
+                    } else {
+                      return AddCard(
+                        lang: lang,
+                        targetLang: "en",
+                        entriesNotifier: entriesNotifier,
+                        path: [...path, "en_tl"],
+                      );
+                    }
+                  }).toList(),
+                ),
+                //Example sentences
+                ExpansionTile(
+                  title: Text(
+                    "Example Sentences:",
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  children: examples.entries.map((entry) {
+                    final key = entry.key;
+                    final value = entry.value;
+
                     return Padding(
                       padding: const EdgeInsets.fromLTRB(20, 0, 0, 0),
-                      child: ListTile(
-                        dense: true,
-                        title: EditableTextCard(
-                          content: item.toString(),
-                          path: [...path, "en_tl", index.toString()],
-                          entriesNotifier: entriesNotifier,
-                          fontSize: 14.0,
-                        ),
-                      ),
+                      child: (key == "add")
+                          ? AddCard(
+                              lang: lang,
+                              targetLang: targetLang,
+                              path: [...path, "ex"],
+                              entriesNotifier: entriesNotifier,
+                            )
+                          : ListTile(
+                              dense: true,
+                              title: EditableTextCard(
+                                content: value["de"]?.toString() ?? "",
+                                path: [...path, "ex", key, "de"],
+                                entriesNotifier: entriesNotifier,
+                                fontSize: 14.0,
+                              ),
+                              subtitle: EditableTextCard(
+                                content: value["ko"]?.toString() ?? "",
+                                path: [...path, "ex", key, "ko"],
+                                entriesNotifier: entriesNotifier,
+                              ),
+                            ),
                     );
                   }).toList(),
                 ),
@@ -633,11 +694,14 @@ class _AddCardState extends State<AddCard> {
 
         //do this now so walkJson still works with the general path and set the actual new index later
         entry = {"$i": entry["custom"]};
-        //iterate keys until we find a free one
-        while (resultsAtPath.containsKey("$i")) {
-          i -= 1;
-        }
 
+        //iterate keys until we find a free one, but only if the resultsAtPath is a map
+        if (resultsAtPath.runtimeType != List) {
+          while (resultsAtPath.containsKey("$i")) {
+            i -= 1;
+          }
+        }
+        print(widget.path);
         //get the empty entry starting at the specified path
         //if we add a new entry at the root, the path has to be []
         //otherwise, the path should be the widgets path except for the first one, which has to always be "-1"
@@ -653,15 +717,26 @@ class _AddCardState extends State<AddCard> {
         }
 
         //get the wanted key (there should only ever be a single key, apart from the "add" key)
-        var key = emptyAtPath.keys.first;
-        emptyAtPath = {"$i": emptyAtPath[key]};
-
-        //append empty entry to the map at the specified path
-        resultsAtPath.addAll(emptyAtPath);
+        //we can skip this if we touch a list instead of a map
+        if (emptyAtPath.runtimeType != List) {
+          var key = emptyAtPath.keys.first;
+          emptyAtPath = {"$i": emptyAtPath[key]};
+        }
 
         //delete and add "add" again, as it should be the last key
-        resultsAtPath.remove("add");
-        resultsAtPath["add"] = {};
+        if (resultsAtPath.runtimeType != List) {
+          //append empty entry to the map at the specified path
+          resultsAtPath.addAll(emptyAtPath);
+
+          resultsAtPath.remove("add");
+          resultsAtPath["add"] = {};
+        } else {
+          //append empty string to the list at the specified path
+          resultsAtPath.add("");
+
+          resultsAtPath.remove("add");
+          resultsAtPath.add("add");
+        }
 
         //set value listener to trigger a rebuild
         var curr = widget.entriesNotifier.value;

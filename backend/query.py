@@ -89,12 +89,13 @@ def fetch(word, lang, target_lang, cur, debug = False):
                 ret[entry_id]['senses'][id]['tags'] = sense.get('raw_tags', [])
 
                 #get example sentences
+                ret[entry_id]['senses'][id].setdefault('ex', {})
 
                 for k, example in enumerate(sense.get('examples', [])):
-                    ret[entry_id]['senses'][id].setdefault(lang + '_ex', []).append(example.get('text'))
-
+                    ret[entry_id]['senses'][id]['ex'].setdefault(k, {})[lang] = example.get('text')
+                
                     #translate to target_lang as well
-                    ret[entry_id]['senses'][id].setdefault(target_lang + '_ex', []).append(example.get('text'))
+                    ret[entry_id]['senses'][id]['ex'].setdefault(k, {})[target_lang] = example.get('text')
                 
             #initialize translation dicts:
             #for sense in ret[i]['senses']:
@@ -226,12 +227,10 @@ def collect_to_be_translated(dict, lang, target_lang):
                     origin.append([entry, "senses", sense_id, content])
                 
                 #example sentences in target lang
-                if content == target_lang + '_ex':
-
-                    for idx, ex in enumerate(dict[entry]['senses'][sense_id][content]):
-
-                        to_be_translated.append(ex)
-                        origin.append([entry, "senses", sense_id, content, idx])
+                if content == 'ex':
+                    for idx in dict[entry]['senses'][sense_id][content].keys():
+                            to_be_translated.append(dict[entry]['senses'][sense_id][content][idx][target_lang])
+                            origin.append([entry, "senses", sense_id, content, idx, target_lang])
         
 
     return to_be_translated, origin
