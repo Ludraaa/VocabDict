@@ -234,6 +234,9 @@ class VocabCards extends StatefulWidget {
 }
 
 class _VocabCardsState extends State<VocabCards> {
+  final Map<String, ExpansibleController> controllers = {};
+  final Map<String, bool> expandedStates = {};
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -256,8 +259,62 @@ class _VocabCardsState extends State<VocabCards> {
                     final value = entryList[index].value;
                     final key = entryList[index].key;
 
+                    // Create a unique controller and expanded flag for each key
+                    controllers.putIfAbsent(key, () => ExpansibleController());
+                    expandedStates.putIfAbsent(key, () => false);
+
+                    final controller = controllers[key]!;
+                    final isExpanded = expandedStates[key]!;
+
                     return Card(
                       child: ExpansionTile(
+                        controller: controller,
+                        trailing: SizedBox(
+                          width: 90,
+                          height: 100,
+                          child: Row(
+                            children: [
+                              //delete button
+                              IconButton(
+                                icon: Icon(Icons.delete),
+                                onPressed: () {
+                                  setState(() {
+                                    widget.entriesNotifier.value.remove(key);
+                                  });
+                                },
+                              ),
+                              IconButton(
+                                icon: AnimatedRotation(
+                                  turns: isExpanded ? 0.5 : 0.0,
+                                  duration: const Duration(milliseconds: 200),
+                                  child: const Icon(Icons.expand_more),
+                                ),
+                                onPressed: () {
+                                  setState(() {
+                                    final newState = !isExpanded;
+                                    expandedStates[key] = newState;
+
+                                    var controller = controllers[key]!;
+
+                                    if (newState) {
+                                      controller.expand();
+                                    } else {
+                                      controller.collapse();
+                                    }
+                                  });
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        //make expansion tile state based on bool for expand button
+                        onExpansionChanged: (expanded) {
+                          setState(() => expandedStates[key] = expanded);
+                        },
+                        initiallyExpanded: isExpanded,
+
+                        //removes the arrow
                         //word
                         title: EditableTextCard(
                           content: value["word"],
@@ -318,7 +375,7 @@ class _VocabCardsState extends State<VocabCards> {
 
 /// Displays a single sense of a word, including translations and tags.
 /// Uses [EditableTextCard] widgets for editable fields and expands to show details.
-class EntryCard extends StatelessWidget {
+class EntryCard extends StatefulWidget {
   //the sense to be displayed
   final Map<String, dynamic> sense;
 
@@ -337,30 +394,94 @@ class EntryCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
-    List tl = sense["${targetLang}_tl"];
-    List enTl = sense["en_tl"];
-    List tags = sense["tags"];
+  State<EntryCard> createState() => _EntryCardState();
+}
 
-    Map<String, dynamic> examples = sense["ex"];
+class _EntryCardState extends State<EntryCard> {
+  bool isExpanded = false;
+
+  final controller = ExpansibleController();
+
+  @override
+  Widget build(BuildContext context) {
+    List tl = widget.sense["${widget.targetLang}_tl"];
+    List enTl = widget.sense["en_tl"];
+    List tags = widget.sense["tags"];
+
+    Map<String, dynamic> examples = widget.sense["ex"];
 
     return Card(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 0, 0, 0),
         child: ExpansionTile(
+          controller: controller,
+          trailing: SizedBox(
+            width: 90,
+            height: 100,
+            child: Row(
+              children: [
+                //delete button
+                IconButton(
+                  icon: Icon(Icons.delete),
+                  onPressed: () {
+                    setState(() {
+                      // clone the map (important for triggering ValueNotifier update)
+                      final updatedValue = Map<String, dynamic>.from(
+                        widget.entriesNotifier.value,
+                      );
+
+                      // walk to target part of the JSON
+                      var resultAtPath = walkJson(
+                        widget.path.sublist(0, widget.path.length - 1),
+                        updatedValue,
+                      );
+
+                      // remove the targeted entry
+                      resultAtPath.remove(widget.path.last);
+
+                      // reassign to trigger listeners
+                      widget.entriesNotifier.value = updatedValue;
+                    });
+                  },
+                ),
+                IconButton(
+                  icon: AnimatedRotation(
+                    turns: isExpanded ? 0.5 : 0.0,
+                    duration: const Duration(milliseconds: 200),
+                    child: const Icon(Icons.expand_more),
+                  ),
+                  onPressed: () {
+                    setState(() {
+                      isExpanded = !isExpanded;
+                      if (isExpanded) {
+                        controller.expand();
+                      } else {
+                        controller.collapse();
+                      }
+                    });
+                  },
+                ),
+              ],
+            ),
+          ),
+          //make expansion tile state based on bool for expand button
+          onExpansionChanged: (expanded) {
+            setState(() => isExpanded = expanded);
+          },
+          initiallyExpanded: isExpanded,
           backgroundColor: Colors.blue[244],
           collapsedBackgroundColor: Colors.white,
           //original language sense
           title: EditableTextCard(
-            content: sense[lang],
-            path: [...path, lang],
-            entriesNotifier: entriesNotifier,
+            content: widget.sense[widget.lang],
+            path: [...widget.path, widget.lang],
+            entriesNotifier: widget.entriesNotifier,
           ),
           //machine translated sense
           subtitle: EditableTextCard(
-            content: sense[targetLang],
-            path: [...path, targetLang],
-            entriesNotifier: entriesNotifier,
+            content: widget.sense[widget.targetLang],
+            path: [...widget.path, widget.targetLang],
+            entriesNotifier: widget.entriesNotifier,
           ),
           //translations, example sentences, etc.
           children: [
@@ -375,8 +496,8 @@ class EntryCard extends StatelessWidget {
                     return Chip(
                       label: EditableTextCard(
                         content: item.toString(),
-                        path: [...path, "tags", index.toString()],
-                        entriesNotifier: entriesNotifier,
+                        path: [...widget.path, "tags", index.toString()],
+                        entriesNotifier: widget.entriesNotifier,
                       ),
                     );
                   }).toList(),
@@ -398,21 +519,21 @@ class EntryCard extends StatelessWidget {
                           title: EditableTextCard(
                             content: item.toString(),
                             path: [
-                              ...path,
-                              "${targetLang}_tl",
+                              ...widget.path,
+                              "${widget.targetLang}_tl",
                               index.toString(),
                             ],
-                            entriesNotifier: entriesNotifier,
+                            entriesNotifier: widget.entriesNotifier,
                             fontSize: 14.0,
                           ),
                         ),
                       );
                     } else {
                       return AddCard(
-                        lang: lang,
-                        targetLang: targetLang,
-                        entriesNotifier: entriesNotifier,
-                        path: [...path, "${targetLang}_tl"],
+                        lang: widget.lang,
+                        targetLang: widget.targetLang,
+                        entriesNotifier: widget.entriesNotifier,
+                        path: [...widget.path, "${widget.targetLang}_tl"],
                       );
                     }
                   }).toList(),
@@ -433,18 +554,18 @@ class EntryCard extends StatelessWidget {
                           dense: true,
                           title: EditableTextCard(
                             content: item.toString(),
-                            path: [...path, "en_tl", index.toString()],
-                            entriesNotifier: entriesNotifier,
+                            path: [...widget.path, "en_tl", index.toString()],
+                            entriesNotifier: widget.entriesNotifier,
                             fontSize: 14.0,
                           ),
                         ),
                       );
                     } else {
                       return AddCard(
-                        lang: lang,
+                        lang: widget.lang,
                         targetLang: "en",
-                        entriesNotifier: entriesNotifier,
-                        path: [...path, "en_tl"],
+                        entriesNotifier: widget.entriesNotifier,
+                        path: [...widget.path, "en_tl"],
                       );
                     }
                   }).toList(),
@@ -463,23 +584,23 @@ class EntryCard extends StatelessWidget {
                       padding: const EdgeInsets.fromLTRB(20, 0, 0, 0),
                       child: (key == "add")
                           ? AddCard(
-                              lang: lang,
-                              targetLang: targetLang,
-                              path: [...path, "ex"],
-                              entriesNotifier: entriesNotifier,
+                              lang: widget.lang,
+                              targetLang: widget.targetLang,
+                              path: [...widget.path, "ex"],
+                              entriesNotifier: widget.entriesNotifier,
                             )
                           : ListTile(
                               dense: true,
                               title: EditableTextCard(
                                 content: value["de"]?.toString() ?? "",
-                                path: [...path, "ex", key, "de"],
-                                entriesNotifier: entriesNotifier,
+                                path: [...widget.path, "ex", key, "de"],
+                                entriesNotifier: widget.entriesNotifier,
                                 fontSize: 14.0,
                               ),
                               subtitle: EditableTextCard(
                                 content: value["ko"]?.toString() ?? "",
-                                path: [...path, "ex", key, "ko"],
-                                entriesNotifier: entriesNotifier,
+                                path: [...widget.path, "ex", key, "ko"],
+                                entriesNotifier: widget.entriesNotifier,
                               ),
                             ),
                     );

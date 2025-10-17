@@ -520,7 +520,6 @@ def get_empty_entry(lang : str, target_lang : str):
         val = list(res.values())[0]
     return {"custom": val}
 
-
 async def run_query(ws: WebSocket, word, lang, target_lang, tl_model):
     await ws.send_text(f"Querying for word: {word}")
     word = word.lower()
