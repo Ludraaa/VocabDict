@@ -1,4 +1,6 @@
 **wiktionary/
 backend/OR_key.txt
 backend/DeepL_key.txt
+backend/jwt_key.txt
+backend/vocab_data.sqlite
 **__pycache__

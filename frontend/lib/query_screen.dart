@@ -112,93 +112,103 @@ class _QueryFieldState extends State<QueryField> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        //Language selection
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text("Translating from "),
-            //input language dropdown
-            DropdownButton<String>(
-              value: lang,
-              items: langSelection.map((lang) {
-                return DropdownMenuItem(value: lang, child: Text(lang));
-              }).toList(),
-              onChanged: (value) {
-                if (value != null) {
-                  setState(() {
-                    lang = value;
-                    _responseNotifier.value = {};
-                  });
-                }
-              },
-            ),
-            Text(" to "),
-            //Target language dropdown
-            DropdownButton<String>(
-              value: targetLang,
-              items: langSelection.map((lang) {
-                return DropdownMenuItem(value: lang, child: Text(lang));
-              }).toList(),
-              onChanged: (value) {
-                if (value != null) {
-                  setState(() {
-                    targetLang = value;
-                    _responseNotifier.value = {};
-                  });
-                }
-              },
-            ),
-          ],
-        ),
-        //Textfield input (and temporary debug print button)
-        Row(
-          children: [
-            Flexible(
-              //input field
-              child: TextField(
-                controller: _queryController,
-                onSubmitted: (value) => queryBackend(),
-                decoration: const InputDecoration(
-                  labelText: "Enter word",
-                  border: OutlineInputBorder(),
+    return Scaffold(
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {},
+        tooltip: "Save",
+        child: Icon(Icons.save),
+      ),
+      body: Column(
+        children: [
+          //Language selection
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text("Translating from "),
+              //input language dropdown
+              DropdownButton<String>(
+                value: lang,
+                items: langSelection.map((lang) {
+                  return DropdownMenuItem(value: lang, child: Text(lang));
+                }).toList(),
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() {
+                      lang = value;
+                      _responseNotifier.value = {};
+                    });
+                  }
+                },
+              ),
+              Text(" to "),
+              //Target language dropdown
+              DropdownButton<String>(
+                value: targetLang,
+                items: langSelection.map((lang) {
+                  return DropdownMenuItem(value: lang, child: Text(lang));
+                }).toList(),
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() {
+                      targetLang = value;
+                      _responseNotifier.value = {};
+                    });
+                  }
+                },
+              ),
+            ],
+          ),
+          //Textfield input (and temporary debug print button)
+          Row(
+            children: [
+              Flexible(
+                //input field
+                child: TextField(
+                  controller: _queryController,
+                  onSubmitted: (value) => queryBackend(),
+                  decoration: const InputDecoration(
+                    labelText: "Enter word",
+                    border: OutlineInputBorder(),
+                  ),
                 ),
               ),
-            ),
-            //debug print button
-            IconButton(
-              onPressed: () {
-                prettyPrint(_responseNotifier.value);
-              },
-              icon: Icon(Icons.text_snippet_outlined),
-            ),
-          ],
-        ),
-        //Submit button with makeshift padding
-        const SizedBox(height: 10),
-        ElevatedButton(onPressed: queryBackend, child: const Text("Submit")),
-        const SizedBox(height: 30),
+              //debug print button
+              IconButton(
+                onPressed: () {
+                  prettyPrint(_responseNotifier.value);
+                },
+                icon: Icon(Icons.text_snippet_outlined),
+              ),
+            ],
+          ),
+          //Submit button with makeshift padding
+          const SizedBox(height: 10),
+          ElevatedButton(onPressed: queryBackend, child: const Text("Submit")),
+          const SizedBox(height: 30),
 
-        // Rendering of results /-/ loading animation
-        _isLoading
-            ? Column(
-                children: [
-                  CircularProgressIndicator(),
-                  Text(_log),
-                  ElevatedButton(onPressed: cancelQuery, child: Text("Cancel")),
-                ],
-              )
-            : _responseNotifier.value.isEmpty
-            ? const Text("Enter query above!")
-            : Expanded(
-                child: VocabCards(
-                  entriesNotifier: _responseNotifier,
-                  lang: lang,
-                  targetLang: targetLang,
+          // Rendering of results /-/ loading animation
+          _isLoading
+              ? Column(
+                  children: [
+                    CircularProgressIndicator(),
+                    Text(_log),
+                    ElevatedButton(
+                      onPressed: cancelQuery,
+                      child: Text("Cancel"),
+                    ),
+                  ],
+                )
+              : _responseNotifier.value.isEmpty
+              ? const Text("Enter query above!")
+              : Expanded(
+                  child: VocabCards(
+                    entriesNotifier: _responseNotifier,
+                    lang: lang,
+                    targetLang: targetLang,
+                  ),
                 ),
-              ),
-      ],
+        ],
+      ),
     );
   }
 }

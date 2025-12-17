@@ -2,9 +2,13 @@ import sys
 import json
 import sqlite3
 from tqdm import tqdm
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from pydantic import BaseModel
 import asyncio
+from contextlib import asynccontextmanager
+import jwt
+from datetime import datetime, timedelta, timezone
+from argon2 import PasswordHasher
 
 #run this app with:
 """
@@ -15,6 +19,126 @@ uvicorn query:app --reload --host 127.0.0.1 --port 8766
 app = FastAPI()
 
 path = './wiktionary/*_dict.jsonl'
+
+# load the open router (or any) api key
+def load_OR_key(path="OR_key.txt"):
+    with open(path, "r") as f:
+        return f.read().strip()
+
+SECRET_KEY = load_OR_key(path="jwt_key.txt")
+DB_FILE = "vocab_data.sqlite"
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup code: initialize DB
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS chapters (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS vocab (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chapter_id INTEGER NOT NULL,
+        word TEXT NOT NULL,
+        translation TEXT NOT NULL,
+        notes TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(chapter_id) REFERENCES chapters(id)
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+    yield  # App is running here
+
+    # Shutdown code (optional)
+    # e.g., close connections, cleanup, etc.
+
+app = FastAPI(lifespan=lifespan)
+
+ph = PasswordHasher()
+class UserCreate(BaseModel):
+    username: str
+    password: str
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+def create_token(user_id: int):
+    payload = {
+        "user_id": user_id,
+        "exp": datetime.now(timezone.utc) + timedelta(days=1)
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+
+def get_user_by_username(username: str):
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT id, username, password_hash FROM users WHERE username = ?", (username,))
+    row = cur.fetchone()
+    conn.close()
+    return row  # returns (id, username, password_hash) or None
+
+@app.post("/register")
+def register(user: UserCreate):
+    print("Registering user:", user.username)
+    print("Password (plain):", user.password)
+    if get_user_by_username(user.username):
+        raise HTTPException(status_code=400, detail="Username already exists, please login instead.")
+
+    # Use argon2 to hash the password
+    password_hash = ph.hash(user.password)
+
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+        (user.username, password_hash)
+    )
+    conn.commit()
+    conn.close()
+    
+    return {"status": "ok"}
+
+@app.post("/login")
+def login(user: UserLogin):
+    db_user = get_user_by_username(user.username)
+    if not db_user:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    user_id, username, password_hash = db_user
+    if not ph.verify(password_hash, user.password):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    token = create_token(user_id)
+    print("User logged in:", user.username)
+    print("Generated token:", token)
+    return {"token": token}
+
+
+
+#############Fetch stuff##############
+
 
 
 #returns data from all entries of a word
@@ -279,11 +403,6 @@ def nllb_translate(words, lang, target_lang):
 
 
 import requests
-
-# load the open router api key
-def load_OR_key(path="OR_key.txt"):
-    with open(path, "r") as f:
-        return f.read().strip()
 
 openrouter_api_key = load_OR_key(path="OR_key.txt")
 openrouter_url = "https://openrouter.ai/api/v1/chat/completions"

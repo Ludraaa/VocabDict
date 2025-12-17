@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:frontend/auth_gate.dart';
 
 //widget imports
 import "query_screen.dart";
+import 'package:frontend/login_screen.dart';
+import 'package:frontend/auth_gate.dart';
 
 void main() {
   runApp(const MyApp());
@@ -41,7 +44,7 @@ class _MyHomePageState extends State<MyHomePage> {
         title: Text(widget.title),
       ),
 
-      body: Padding(padding: const EdgeInsets.all(16.0), child: QueryField()),
+      body: Padding(padding: const EdgeInsets.all(16.0), child: AuthGate()),
     );
   }
 }
