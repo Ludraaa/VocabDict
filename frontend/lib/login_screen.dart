@@ -71,7 +71,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
         final token = data["token"];
-        await _storage.write(key: "token", value: token);
+        await _storage.write(key: "jwt", value: token);
         if (!mounted) return;
         ScaffoldMessenger.of(
           context,

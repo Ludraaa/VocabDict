@@ -1,9 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:frontend/auth_gate.dart';
-
-//widget imports
-import "query_screen.dart";
-import 'package:frontend/login_screen.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:frontend/auth_gate.dart';
 
 void main() {
@@ -17,11 +13,12 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'VocabDict',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        brightness: Brightness.light, // optional, just for fallback
+        primaryColor: Colors.blueGrey, // AppBar, buttons
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const MyHomePage(title: 'VocabDict Home Page'),
     );
   }
 }
@@ -38,6 +35,9 @@ class MyHomePage extends StatefulWidget {
 class _MyHomePageState extends State<MyHomePage> {
   @override
   Widget build(BuildContext context) {
+    //these are just here to delete the stored tokens for testing
+    //final storage = FlutterSecureStorage();
+    //storage.deleteAll();
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,

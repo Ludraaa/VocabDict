@@ -2,11 +2,11 @@ import sys
 import json
 import sqlite3
 from tqdm import tqdm
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
+from fastapi import Body, FastAPI, Path, WebSocket, WebSocketDisconnect, HTTPException, Header
 from pydantic import BaseModel
 import asyncio
 from contextlib import asynccontextmanager
-import jwt
+from jose import jwt, JWTError
 from datetime import datetime, timedelta, timezone
 from argon2 import PasswordHasher
 
@@ -14,6 +14,41 @@ from argon2 import PasswordHasher
 """
 uvicorn query:app --reload --host 127.0.0.1 --port 8766
 """
+
+#to verify and decode jwt tokens
+def decode_jwt(token: str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms="HS256")
+        return payload.get("user_id")
+    except JWTError:
+        return None
+
+def verify_user_token(authorization: str):
+    try:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing or invalid token")
+
+        token = authorization.split(" ")[1]
+        user_id = decode_jwt(token)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    
+        # Check user exists
+        conn = sqlite3.connect(DB_FILE)
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users WHERE id = ?", (user_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=401, detail="User does not exist")
+        conn.close()
+
+        return user_id
+    
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    return user_id
 
 
 app = FastAPI()
@@ -30,10 +65,10 @@ DB_FILE = "vocab_data.sqlite"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup code: initialize DB
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
 
+    # Users
     cur.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,35 +78,46 @@ async def lifespan(app: FastAPI):
     )
     """)
 
+    # Collections (top-level)
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS chapters (
+    CREATE TABLE IF NOT EXISTS collections (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
         name TEXT NOT NULL,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(id)
+        FOREIGN KEY (user_id) REFERENCES users(id)
+            ON DELETE CASCADE
     )
     """)
 
+    # Chapters / Units
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS chapters (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        collection_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (collection_id) REFERENCES collections(id)
+            ON DELETE CASCADE
+    )
+    """)
+
+    # Vocabulary
     cur.execute("""
     CREATE TABLE IF NOT EXISTS vocab (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        chapter_id INTEGER NOT NULL,
-        word TEXT NOT NULL,
-        translation TEXT NOT NULL,
-        notes TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(chapter_id) REFERENCES chapters(id)
-    )
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chapter_id INTEGER NOT NULL,
+    data TEXT NOT NULL,              -- JSON blob
+    name TEXT NOT NULL,              -- Display name
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (chapter_id) REFERENCES chapters(id)
+        ON DELETE CASCADE
+    )    
     """)
 
     conn.commit()
     conn.close()
-
-    yield  # App is running here
-
-    # Shutdown code (optional)
-    # e.g., close connections, cleanup, etc.
+    yield
 
 app = FastAPI(lifespan=lifespan)
 
@@ -137,9 +183,414 @@ def login(user: UserLogin):
 
 
 
-#############Fetch stuff##############
+#############Collection stuff##############
+
+@app.get("/collections")
+def get_collections(authorization: str = Header(None)):
+    user_id = verify_user_token(authorization)
+
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT id, name FROM collections WHERE user_id = ? ORDER BY created_at",
+        (user_id,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    return [{"id": r[0], "name": r[1]} for r in rows]
+
+# Pydantic model for POST body
+class CollectionCreate(BaseModel):
+    name: str
+
+@app.post("/createCollection")
+def create_collection(
+    collection: CollectionCreate,
+    authorization: str = Header(None)
+):
+    user_id = verify_user_token(authorization)
+
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO collections (user_id, name) VALUES (?, ?)",
+        (user_id, collection.name)
+    )
+    conn.commit()
+    new_id = cur.lastrowid
+    conn.close()
+
+    return {"id": new_id, "name": collection.name}
+
+class RenameRequest(BaseModel):
+    new_name: str
+
+@app.patch("/collections/{collection_id}")
+def rename_collection(
+    collection_id: int = Path(...),
+    payload: RenameRequest = ...,
+    authorization: str = Header(None)
+):
+    user_id = verify_user_token(authorization)
+
+    print("Renaming collection:", collection_id, "to", payload.new_name)
+
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+
+    # Ensure collection belongs to user
+    cur.execute(
+        "SELECT id FROM collections WHERE id = ? AND user_id = ?",
+        (collection_id, user_id)
+    )
+    row = cur.fetchone()
+    print(row)
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    # Update name
+    cur.execute(
+        "UPDATE collections SET name = ? WHERE id = ?",
+        (payload.new_name, collection_id)
+    )
+    conn.commit()
+    conn.close()
+
+    return {"id": collection_id, "new_name": payload.new_name}
 
 
+@app.delete("/collections/{collection_id}")
+def delete_collection(
+    collection_id: int = Path(...),
+    authorization: str = Header(None)
+):
+    user_id = verify_user_token(authorization)
+
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+
+    # Check ownership
+    cur.execute(
+        "SELECT id FROM collections WHERE id = ? AND user_id = ?",
+        (collection_id, user_id)
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    # Delete collection (optional: cascade delete chapters/vocab if needed)
+    cur.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+    conn.commit()
+    conn.close()
+
+    return {"status": "deleted", "id": collection_id}
+
+#############Chapter stuff##############
+
+@app.get("/collections/{collection_id}/chapters")
+def get_chapters(collection_id: int, authorization: str = Header(None)):
+    user_id = verify_user_token(authorization)
+
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+
+    # Ensure collection belongs to user
+    cur.execute("SELECT id FROM collections WHERE id = ? AND user_id = ?", (collection_id, user_id))
+    if not cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    cur.execute("SELECT id, name FROM chapters WHERE collection_id = ?", (collection_id,))
+    chapters = [{"id": row[0], "name": row[1]} for row in cur.fetchall()]
+    conn.close()
+    return chapters
+
+
+@app.post("/collections/{collection_id}/chapters")
+def create_chapter(collection_id: int, authorization: str = Header(None), body: dict = Body(...)):
+    user_id = verify_user_token(authorization)
+
+    name = body.get("name")
+    if not name:
+        raise HTTPException(status_code=400, detail="Name required")
+
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+
+    # Ensure collection belongs to user
+    cur.execute("SELECT id FROM collections WHERE id = ? AND user_id = ?", (collection_id, user_id))
+    if not cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    cur.execute("INSERT INTO chapters (collection_id, name) VALUES (?, ?)", (collection_id, name))
+    conn.commit()
+    conn.close()
+    return {"status": "created", "name": name}
+
+@app.patch("/chapters/{chapter_id}")
+def rename_chapter(chapter_id: int, authorization: str = Header(None), body: dict = Body(...)):
+    user_id = verify_user_token(authorization)
+
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    # Ensure chapter belongs to a collection owned by user
+    cur.execute("""
+        SELECT c.id
+        FROM chapters c
+        JOIN collections co ON c.collection_id = co.id
+        WHERE c.id = ? AND co.user_id = ?
+    """, (chapter_id, user_id))
+
+    if not cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    
+    new_name = body.get("new_name")
+
+    cur.execute("UPDATE chapters SET name = ? WHERE id = ?", (new_name, chapter_id))
+    conn.commit()
+    conn.close()
+    return {"status": "updated", "name": new_name}
+
+
+@app.delete("/chapters/{chapter_id}")
+def delete_chapter(chapter_id: int, authorization: str = Header(None)):
+    user_id = verify_user_token(authorization)  # validate JWT
+
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+
+    # Ensure chapter belongs to a collection owned by this user
+    cur.execute("""
+        SELECT c.id
+        FROM chapters c
+        JOIN collections co ON c.collection_id = co.id
+        WHERE c.id = ? AND co.user_id = ?
+    """, (chapter_id, user_id))
+
+    if not cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    cur.execute("DELETE FROM chapters WHERE id = ?", (chapter_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "deleted", "id": chapter_id}
+
+#############Vocab stuff##############
+
+@app.get("/chapters/{chapter_id}/vocab")
+def get_vocab(chapter_id: int, authorization: str = Header(None)):
+    user_id = verify_user_token(authorization)
+
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+
+    # Ensure chapter belongs to user
+    cur.execute("""
+        SELECT c.id
+        FROM chapters c
+        JOIN collections co ON c.collection_id = co.id
+        WHERE c.id = ? AND co.user_id = ?
+    """, (chapter_id, user_id))
+
+    if not cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    # Fetch vocab entries
+    cur.execute("SELECT id, name FROM vocab WHERE chapter_id = ?", (chapter_id,))
+    vocab = [{"id": row[0], "name": row[1]} for row in cur.fetchall()]
+
+    conn.close()
+    return vocab
+
+@app.post("/chapters/{chapter_id}/vocab")
+def create_vocab(chapter_id: int, authorization: str = Header(None), body: dict = Body(...)):
+    """
+    body should contain:
+    {
+        "name": "display name",
+        "data": { ... }  # your giant JSON
+    }
+    """
+    user_id = verify_user_token(authorization)
+
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+
+    # Ensure chapter belongs to user
+    cur.execute("""
+        SELECT c.id
+        FROM chapters c
+        JOIN collections co ON c.collection_id = co.id
+        WHERE c.id = ? AND co.user_id = ?
+    """, (chapter_id, user_id))
+
+    if not cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    name = body.get("name")
+    data = json.dumps(body.get("data", {}))  # store as JSON string
+
+    cur.execute(
+        "INSERT INTO vocab (chapter_id, name, data) VALUES (?, ?, ?)",
+        (chapter_id, name, data)
+    )
+    conn.commit()
+    vocab_id = cur.lastrowid
+    conn.close()
+
+    return {"status": "created", "id": vocab_id, "name": name}
+
+@app.put("/chapters/{chapter_id}/vocab/{vocab_id}")
+def update_vocab(
+    chapter_id: int,
+    vocab_id: int,
+    authorization: str = Header(None),
+    body: dict = Body(...)
+):
+    """
+    Update an existing vocab entry.
+    body should contain:
+    {
+        "name": "display name",
+        "data": { ... }  # giant JSON
+    }
+    """
+    if authorization is None:
+        raise HTTPException(status_code=401, detail="Authorization header missing")
+
+    user_id = verify_user_token(authorization)
+
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+
+    # Ensure chapter belongs to user
+    cur.execute("""
+        SELECT c.id
+        FROM chapters c
+        JOIN collections co ON c.collection_id = co.id
+        WHERE c.id = ? AND co.user_id = ?
+    """, (chapter_id, user_id))
+
+    if not cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Chapter not found or not owned by user")
+
+    name = body.get("name")
+    data = json.dumps(body.get("data", {}))
+
+    # Make sure vocab exists
+    cur.execute("""
+        SELECT id FROM vocab
+        WHERE id = ? AND chapter_id = ?
+    """, (vocab_id, chapter_id))
+    if not cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Vocab entry not found")
+
+    # Update
+    cur.execute("""
+        UPDATE vocab
+        SET name = ?, data = ?
+        WHERE id = ? AND chapter_id = ?
+    """, (name, data, vocab_id, chapter_id))
+
+    conn.commit()
+    conn.close()
+
+    return {"status": "updated", "id": vocab_id, "name": name}
+
+
+
+@app.delete("/vocab/{vocab_id}")
+def delete_vocab(
+    vocab_id: int,
+    authorization: str = Header(None),
+):
+    user_id = verify_user_token(authorization)
+
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+
+    # Ensure vocab belongs to the user
+    cur.execute("""
+        SELECT v.id
+        FROM vocab v
+        JOIN chapters c ON v.chapter_id = c.id
+        JOIN collections co ON c.collection_id = co.id
+        WHERE v.id = ? AND co.user_id = ?
+    """, (vocab_id, user_id))
+
+    if cur.fetchone() is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Vocab not found")
+
+    cur.execute("DELETE FROM vocab WHERE id = ?", (vocab_id,))
+    conn.commit()
+    conn.close()
+
+    return {"status": "deleted"}
+
+
+@app.get("/vocab_data/{chapter_id}/{vocab_id}")
+def get_vocab_data(chapter_id: int, vocab_id: int, authorization: str = Header(None)):
+    if authorization is None:
+        raise HTTPException(status_code=401, detail="Authorization header missing")
+
+    user_id = verify_user_token(authorization)
+
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+
+    # Make sure the chapter belongs to the user
+    cur.execute("""
+        SELECT c.id
+        FROM chapters c
+        JOIN collections co ON c.collection_id = co.id
+        WHERE c.id = ? AND co.user_id = ?
+    """, (chapter_id, user_id))
+    chapter = cur.fetchone()
+    if not chapter:
+        conn.close()
+        raise HTTPException(status_code=403, detail="Chapter not found or not owned by user")
+
+    # Fetch vocab entry
+    cur.execute("""
+        SELECT id, chapter_id, name, data, created_at
+        FROM vocab
+        WHERE id = ? AND chapter_id = ?
+    """, (vocab_id, chapter_id))
+    vocab = cur.fetchone()
+    conn.close()
+
+    if not vocab:
+        raise HTTPException(status_code=404, detail="Vocab not found")
+
+    vocab_dict = {
+        "id": vocab[0],
+        "chapter_id": vocab[1],
+        "name": vocab[2],
+        "data": vocab[3],  # JSON blob as string
+        "created_at": vocab[4],
+    }
+    return vocab_dict
+
+
+
+
+
+
+
+
+#############Query stuff##############
 
 #returns data from all entries of a word
 def fetch(word, lang, target_lang, cur, debug = False):

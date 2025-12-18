@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'dart:convert'; // for jsonDecode
 import 'package:http/http.dart' as http;
@@ -6,11 +7,16 @@ import 'utils.dart'; // for prettyPrint
 import 'package:web_socket_channel/web_socket_channel.dart'; // for WebSockets
 import 'dart:math';
 
+final _storage = FlutterSecureStorage();
+
 ///This class handles the input field and the button for querying the dictionary / backend,
 ///as well as language selection.
 ///This is then passed to VocabCards for rendering.
 class QueryField extends StatefulWidget {
-  const QueryField({super.key});
+  int chapterId;
+  int? vocabId;
+
+  QueryField({super.key, required this.chapterId, this.vocabId});
 
   @override
   State<QueryField> createState() => _QueryFieldState();
@@ -19,6 +25,7 @@ class QueryField extends StatefulWidget {
 class _QueryFieldState extends State<QueryField> {
   //to listen to changes to the input field
   final _queryController = TextEditingController();
+  String queryText = "";
 
   //to listen to changes to the response that happen in children of this widget
   final ValueNotifier<Map<dynamic, dynamic>> _responseNotifier = ValueNotifier(
@@ -42,6 +49,38 @@ class _QueryFieldState extends State<QueryField> {
   //Options for language selection, expand later..
   final List<String> langSelection = ["en", "de", "ko"];
 
+  @override
+  void initState() {
+    if (widget.vocabId != null) {
+      // Load existing vocab data for editing
+      _loadExistingVocab();
+    }
+    super.initState();
+  }
+
+  Future<void> _loadExistingVocab() async {
+    final token = await _storage.read(key: "jwt");
+    if (token == null) throw Exception("Not authenticated");
+
+    final response = await http.get(
+      Uri.parse(
+        "http://127.0.0.1:8766/vocab_data/${widget.chapterId}/${widget.vocabId}",
+      ),
+      headers: {"Authorization": "Bearer $token"},
+    );
+
+    if (response.statusCode != 200) {
+      throw Exception("Failed to fetch vocab: ${response.statusCode}");
+    }
+
+    dynamic data = jsonDecode(response.body);
+
+    setState(() {
+      queryText = data["name"];
+      _responseNotifier.value = jsonDecode(data["data"]);
+    });
+  }
+
   ///Performs a dictionary lookup + translation via the backend for the given word and returns the response as a Map.
   void queryBackend() async {
     //enable loading animation/logic
@@ -54,6 +93,7 @@ class _QueryFieldState extends State<QueryField> {
 
     //get the text from the input field
     _query = _queryController.text;
+    queryText = _query;
 
     //backend address and port with parameters
     _channel = WebSocketChannel.connect(
@@ -110,104 +150,171 @@ class _QueryFieldState extends State<QueryField> {
     });
   }
 
+  Future<void> saveVocabApi({
+    required int chapterId,
+    required String name,
+    required Map<dynamic, dynamic> data,
+    int? vocabId,
+  }) async {
+    final token = await _storage.read(key: "jwt");
+    if (token == null) throw Exception("Not authenticated");
+
+    final uri = widget.vocabId == null
+        ? Uri.parse("http://127.0.0.1:8766/chapters/$chapterId/vocab")
+        : Uri.parse(
+            "http://127.0.0.1:8766/chapters/$chapterId/vocab/${widget.vocabId}",
+          );
+
+    http.Response response;
+
+    if (widget.vocabId == null) {
+      response = await http.post(
+        uri,
+        headers: {
+          "Authorization": "Bearer $token",
+          "Content-Type": "application/json",
+        },
+        body: jsonEncode({"name": name, "data": data}),
+      );
+    } else {
+      response = await http.put(
+        uri,
+        headers: {
+          "Authorization": "Bearer $token",
+          "Content-Type": "application/json",
+        },
+        body: jsonEncode({"name": name, "data": data}),
+      );
+    }
+
+    if (response.statusCode != 200) {
+      throw Exception(
+        "Failed to save vocab (${response.statusCode}): ${response.body}",
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       floatingActionButton: FloatingActionButton(
-        onPressed: () {},
+        onPressed: () {
+          try {
+            saveVocabApi(
+              chapterId: widget.chapterId,
+              name: queryText,
+              data: _responseNotifier.value,
+              vocabId: widget.vocabId == -1 ? null : widget.vocabId,
+            );
+            if (!mounted) return;
+            Navigator.pop(context, true); // signal success
+          } catch (e) {
+            if (!mounted) return;
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text(e.toString())));
+          }
+        },
         tooltip: "Save",
         child: Icon(Icons.save),
       ),
-      body: Column(
-        children: [
-          //Language selection
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text("Translating from "),
-              //input language dropdown
-              DropdownButton<String>(
-                value: lang,
-                items: langSelection.map((lang) {
-                  return DropdownMenuItem(value: lang, child: Text(lang));
-                }).toList(),
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() {
-                      lang = value;
-                      _responseNotifier.value = {};
-                    });
-                  }
-                },
-              ),
-              Text(" to "),
-              //Target language dropdown
-              DropdownButton<String>(
-                value: targetLang,
-                items: langSelection.map((lang) {
-                  return DropdownMenuItem(value: lang, child: Text(lang));
-                }).toList(),
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() {
-                      targetLang = value;
-                      _responseNotifier.value = {};
-                    });
-                  }
-                },
-              ),
-            ],
-          ),
-          //Textfield input (and temporary debug print button)
-          Row(
-            children: [
-              Flexible(
-                //input field
-                child: TextField(
-                  controller: _queryController,
-                  onSubmitted: (value) => queryBackend(),
-                  decoration: const InputDecoration(
-                    labelText: "Enter word",
-                    border: OutlineInputBorder(),
-                  ),
+      appBar: AppBar(title: const Text("Enter a query")),
+      body: Padding(
+        padding: const EdgeInsets.all(10.0),
+        child: Column(
+          children: [
+            //Language selection
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text("Translating from "),
+                //input language dropdown
+                DropdownButton<String>(
+                  value: lang,
+                  items: langSelection.map((lang) {
+                    return DropdownMenuItem(value: lang, child: Text(lang));
+                  }).toList(),
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() {
+                        lang = value;
+                        _responseNotifier.value = {};
+                      });
+                    }
+                  },
                 ),
-              ),
-              //debug print button
-              IconButton(
-                onPressed: () {
-                  prettyPrint(_responseNotifier.value);
-                },
-                icon: Icon(Icons.text_snippet_outlined),
-              ),
-            ],
-          ),
-          //Submit button with makeshift padding
-          const SizedBox(height: 10),
-          ElevatedButton(onPressed: queryBackend, child: const Text("Submit")),
-          const SizedBox(height: 30),
-
-          // Rendering of results /-/ loading animation
-          _isLoading
-              ? Column(
-                  children: [
-                    CircularProgressIndicator(),
-                    Text(_log),
-                    ElevatedButton(
-                      onPressed: cancelQuery,
-                      child: Text("Cancel"),
+                Text(" to "),
+                //Target language dropdown
+                DropdownButton<String>(
+                  value: targetLang,
+                  items: langSelection.map((lang) {
+                    return DropdownMenuItem(value: lang, child: Text(lang));
+                  }).toList(),
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() {
+                        targetLang = value;
+                        _responseNotifier.value = {};
+                      });
+                    }
+                  },
+                ),
+              ],
+            ),
+            //Textfield input (and temporary debug print button)
+            Row(
+              children: [
+                Flexible(
+                  //input field
+                  child: TextField(
+                    controller: _queryController,
+                    onSubmitted: (value) => queryBackend(),
+                    decoration: const InputDecoration(
+                      labelText: "Enter word",
+                      border: OutlineInputBorder(),
                     ),
-                  ],
-                )
-              : _responseNotifier.value.isEmpty
-              ? const Text("Enter query above!")
-              : Expanded(
-                  child: VocabCards(
-                    entriesNotifier: _responseNotifier,
-                    lang: lang,
-                    targetLang: targetLang,
                   ),
                 ),
-        ],
+                //debug print button
+                IconButton(
+                  onPressed: () {
+                    prettyPrint(_responseNotifier.value);
+                  },
+                  icon: Icon(Icons.text_snippet_outlined),
+                ),
+              ],
+            ),
+            //Submit button with makeshift padding
+            const SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: queryBackend,
+              child: const Text("Submit"),
+            ),
+            const SizedBox(height: 30),
+
+            // Rendering of results /-/ loading animation
+            _isLoading
+                ? Column(
+                    children: [
+                      CircularProgressIndicator(),
+                      Text(_log),
+                      ElevatedButton(
+                        onPressed: cancelQuery,
+                        child: Text("Cancel"),
+                      ),
+                    ],
+                  )
+                : _responseNotifier.value.isEmpty
+                ? const Text("Enter query above!")
+                : Expanded(
+                    child: VocabCards(
+                      entriesNotifier: _responseNotifier,
+                      lang: lang,
+                      targetLang: targetLang,
+                    ),
+                  ),
+          ],
+        ),
       ),
     );
   }

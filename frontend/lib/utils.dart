@@ -1,7 +1,5 @@
 import 'dart:convert';
 
-import 'package:flutter/cupertino.dart';
-
 ///Prettily prints a json object with indent
 void prettyPrint(Map<dynamic, dynamic> jsonMap) {
   const encoder = JsonEncoder.withIndent('  '); // 2 spaces indentation
